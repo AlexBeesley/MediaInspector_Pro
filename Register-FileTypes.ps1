@@ -1,11 +1,12 @@
 # ============================================================
-# Registers SlowmoPlayer with Explorer for video files.
+# Registers MediaInspector_Pro with Explorer for video, photo and
+# audio files.
 #
 # Explorer's "Open with" / default-app system only accepts a real .exe -
 # a .bat or .ps1 will not appear in the app picker, which is why setting
-# the default previously did nothing. So this builds a tiny SlowmoPlayer.exe
-# shim (compiled locally, no downloads) that hands the file to Launch.ps1,
-# then registers that.
+# the default previously did nothing. So this builds a tiny
+# MediaInspector_Pro.exe shim (compiled locally, no downloads) that hands
+# the file to Launch.ps1, then registers that.
 #
 # All keys are under HKCU - no admin, affects only this user.
 # Run with -Remove to undo.
@@ -15,21 +16,57 @@ param([switch]$Remove)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Exe = Join-Path $Root "SlowmoPlayer.exe"
+$Exe = Join-Path $Root "MediaInspector_Pro.exe"
 $Launch = Join-Path $Root "Launch.ps1"
-$ProgId = "SlowmoPlayer.Video"
-$AppName = "SlowmoPlayer.exe"
-$Exts = @(".mp4", ".mov", ".m4v", ".mkv")
+$AppName = "MediaInspector_Pro.exe"
 $Classes = "HKCU:\Software\Classes"
 
-if ($Remove) {
+# One ProgId per kind rather than one for everything, so Explorer's
+# "Open with" list shows a sensible type name and Windows can keep a
+# separate default for photos than for video if you want one.
+$Kinds = @(
+    @{ ProgId = "MediaInspectorPro.Video"; Type = "Video"; Friendly = "MediaInspector_Pro Video"
+       Exts = @(".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".wmv", ".flv", ".mpg",
+                ".mpeg", ".m2ts", ".mts", ".ts", ".m2v", ".vob", ".3gp", ".3g2", ".ogv",
+                ".mxf", ".asf", ".divx", ".f4v", ".gif", ".ivf") }
+    @{ ProgId = "MediaInspectorPro.Photo"; Type = "Image"; Friendly = "MediaInspector_Pro Image"
+       Exts = @(".jpg", ".jpeg", ".jfif", ".png", ".bmp", ".webp", ".tif", ".tiff",
+                ".heic", ".heif", ".avif", ".jxl", ".jp2", ".tga", ".exr", ".hdr",
+                ".dds", ".ppm", ".pgm", ".pnm", ".pcx", ".qoi", ".dng", ".cr2", ".cr3",
+                ".nef", ".arw", ".raf", ".orf", ".rw2") }
+    @{ ProgId = "MediaInspectorPro.Audio"; Type = "Audio"; Friendly = "MediaInspector_Pro Audio"
+       Exts = @(".mp3", ".wav", ".flac", ".aac", ".m4a", ".m4b", ".ogg", ".oga", ".opus",
+                ".wma", ".aiff", ".aif", ".ape", ".wv", ".mka", ".dsf", ".dff", ".ac3",
+                ".dts", ".mp2", ".caf", ".au", ".amr") }
+)
+$AllExts = $Kinds | ForEach-Object { $_.Exts } | Select-Object -Unique
+
+# The pre-rename ProgId and shim, cleaned up so the old "Open with
+# SlowmoPlayer" verb doesn't linger in the context menu forever.
+$LegacyProgId = "SlowmoPlayer.Video"
+$LegacyApp = "SlowmoPlayer.exe"
+$LegacyExts = @(".mp4", ".mov", ".m4v", ".mkv")
+
+function Remove-Registration {
+    param([string]$ProgId, [string]$App, [string[]]$Exts, [string]$Verb)
     Remove-Item "$Classes\$ProgId" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$Classes\Applications\$AppName" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "$Classes\Applications\$App" -Recurse -Force -ErrorAction SilentlyContinue
     foreach ($e in $Exts) {
-        Remove-Item "$Classes\SystemFileAssociations\$e\shell\SlowmoPlayer" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item "$Classes\SystemFileAssociations\$e\shell\$Verb" -Recurse -Force -ErrorAction SilentlyContinue
         $owp = "$Classes\$e\OpenWithProgids"
         if (Test-Path $owp) { Remove-ItemProperty -Path $owp -Name $ProgId -Force -ErrorAction SilentlyContinue }
     }
+}
+
+# Always clear the old registration, whether installing or removing - an
+# upgrade should not leave two entries pointing at two different exes.
+Remove-Registration -ProgId $LegacyProgId -App $LegacyApp -Exts $LegacyExts -Verb "SlowmoPlayer"
+
+if ($Remove) {
+    foreach ($k in $Kinds) {
+        Remove-Registration -ProgId $k.ProgId -App $AppName -Exts $k.Exts -Verb "MediaInspectorPro"
+    }
+    Remove-Item "$Classes\Applications\$AppName" -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "Removed. (If it was set as the default app, pick a new default in"
     Write-Host "Settings > Apps > Default apps.)"
     return
@@ -46,7 +83,7 @@ using System.IO;
 using System.Reflection;
 using System.Text;
 
-static class SlowmoShim {
+static class MediaInspectorShim {
     static void Main(string[] argv) {
         string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
         string launch = Path.Combine(dir, "Launch.ps1");
@@ -83,36 +120,38 @@ if (-not (Test-Path "C:\Program Files\MPV Player\mpv.exe")) {
 }
 $cmd = "`"$Exe`" `"%1`""
 
-# ---------- ProgId ----------
-New-Item -Path "$Classes\$ProgId\shell\open\command" -Force | Out-Null
-Set-ItemProperty -Path "$Classes\$ProgId" -Name "(default)" -Value "Video"
-Set-ItemProperty -Path "$Classes\$ProgId" -Name "FriendlyTypeName" -Value "SlowmoPlayer Video"
-Set-ItemProperty -Path "$Classes\$ProgId\shell\open\command" -Name "(default)" -Value $cmd
-New-Item -Path "$Classes\$ProgId\DefaultIcon" -Force | Out-Null
-Set-ItemProperty -Path "$Classes\$ProgId\DefaultIcon" -Name "(default)" -Value $icon
-
 # ---------- Application entry: this is what makes it show up in
 #            "Open with > Choose another app" ----------
 New-Item -Path "$Classes\Applications\$AppName\shell\open\command" -Force | Out-Null
-Set-ItemProperty -Path "$Classes\Applications\$AppName" -Name "FriendlyAppName" -Value "SlowmoPlayer"
+Set-ItemProperty -Path "$Classes\Applications\$AppName" -Name "FriendlyAppName" -Value "MediaInspector_Pro"
 Set-ItemProperty -Path "$Classes\Applications\$AppName\shell\open\command" -Name "(default)" -Value $cmd
 New-Item -Path "$Classes\Applications\$AppName\DefaultIcon" -Force | Out-Null
 Set-ItemProperty -Path "$Classes\Applications\$AppName\DefaultIcon" -Name "(default)" -Value $icon
 New-Item -Path "$Classes\Applications\$AppName\SupportedTypes" -Force | Out-Null
 
-foreach ($e in $Exts) {
-    Set-ItemProperty -Path "$Classes\Applications\$AppName\SupportedTypes" -Name $e -Value ""
+foreach ($k in $Kinds) {
+    # ---------- ProgId ----------
+    New-Item -Path "$Classes\$($k.ProgId)\shell\open\command" -Force | Out-Null
+    Set-ItemProperty -Path "$Classes\$($k.ProgId)" -Name "(default)" -Value $k.Type
+    Set-ItemProperty -Path "$Classes\$($k.ProgId)" -Name "FriendlyTypeName" -Value $k.Friendly
+    Set-ItemProperty -Path "$Classes\$($k.ProgId)\shell\open\command" -Name "(default)" -Value $cmd
+    New-Item -Path "$Classes\$($k.ProgId)\DefaultIcon" -Force | Out-Null
+    Set-ItemProperty -Path "$Classes\$($k.ProgId)\DefaultIcon" -Name "(default)" -Value $icon
 
-    New-Item -Path "$Classes\$e\OpenWithProgids" -Force | Out-Null
-    New-ItemProperty -Path "$Classes\$e\OpenWithProgids" -Name $ProgId -Value ([byte[]]@()) `
-        -PropertyType None -Force -ErrorAction SilentlyContinue | Out-Null
+    foreach ($e in $k.Exts) {
+        Set-ItemProperty -Path "$Classes\Applications\$AppName\SupportedTypes" -Name $e -Value ""
 
-    # Always-visible right-click verb (works regardless of default app)
-    $verb = "$Classes\SystemFileAssociations\$e\shell\SlowmoPlayer"
-    New-Item -Path "$verb\command" -Force | Out-Null
-    Set-ItemProperty -Path $verb -Name "(default)" -Value "Open with SlowmoPlayer"
-    Set-ItemProperty -Path $verb -Name "Icon" -Value $icon
-    Set-ItemProperty -Path "$verb\command" -Name "(default)" -Value $cmd
+        New-Item -Path "$Classes\$e\OpenWithProgids" -Force | Out-Null
+        New-ItemProperty -Path "$Classes\$e\OpenWithProgids" -Name $k.ProgId -Value ([byte[]]@()) `
+            -PropertyType None -Force -ErrorAction SilentlyContinue | Out-Null
+
+        # Always-visible right-click verb (works regardless of default app)
+        $verb = "$Classes\SystemFileAssociations\$e\shell\MediaInspectorPro"
+        New-Item -Path "$verb\command" -Force | Out-Null
+        Set-ItemProperty -Path $verb -Name "(default)" -Value "Open with MediaInspector_Pro"
+        Set-ItemProperty -Path $verb -Name "Icon" -Value $icon
+        Set-ItemProperty -Path "$verb\command" -Name "(default)" -Value $cmd
+    }
 }
 
 # Nudge Explorer to reload associations
@@ -124,12 +163,12 @@ try {
 } catch {}
 
 Write-Host ""
-Write-Host "Registered for $($Exts -join ', ')."
+Write-Host "Registered for $($AllExts.Count) extensions across video, photos and audio."
 Write-Host ""
-Write-Host "Right-click any video -> 'Open with SlowmoPlayer' works now."
+Write-Host "Right-click any of them -> 'Open with MediaInspector_Pro' works now."
 Write-Host ""
 Write-Host "TO MAKE IT THE DEFAULT (must be done by hand - Windows 10/11 protects"
 Write-Host "the default-app choice with a signed hash, so no script can set it):"
-Write-Host "  Right-click a .mov  ->  Open with  ->  Choose another app"
-Write-Host "  ->  pick SlowmoPlayer  ->  tick 'Always use this app'"
-Write-Host "SlowmoPlayer now appears in that list because it is a real .exe."
+Write-Host "  Right-click a file  ->  Open with  ->  Choose another app"
+Write-Host "  ->  pick MediaInspector_Pro  ->  tick 'Always use this app'"
+Write-Host "It appears in that list because it is a real .exe."

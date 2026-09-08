@@ -1,3 +1,6 @@
 state_*.json
 Exports/*
 !Exports/.gitkeep
+MediaInspector_Pro.exe
+SlowmoPlayer.exe
+config/render.conf

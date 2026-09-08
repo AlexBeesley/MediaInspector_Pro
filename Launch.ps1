@@ -1,7 +1,10 @@
 # ============================================================
-# SlowmoPlayer launcher
-#   * restores the last played video and the player window position
-#   * saves the window rect periodically while the player runs
+# MediaInspector_Pro launcher
+#   * restores the last opened media and the window POSITION
+#   * the window SIZE comes from the media itself - the Lua script fits the
+#     window to each file as it loads, so a 1080p clip opens as a 1080p
+#     window and a 6000px photo opens as large as the display allows
+#   * saves the window position periodically while the player runs
 # mpv has no window-position property, so the rect is read from the
 # Win32 window handle here rather than from inside the Lua script.
 # ============================================================
@@ -12,6 +15,7 @@ $ErrorActionPreference = "SilentlyContinue"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $GeomFile = Join-Path $Root "state_geometry.json"
 $StateFile = Join-Path $Root "state_player.json"
+$PipeName = "mediainspector_pro"
 
 $mpv = "C:\Program Files\MPV Player\mpv.exe"
 if (-not (Test-Path $mpv)) {
@@ -22,7 +26,7 @@ if (-not (Test-Path $mpv)) {
     [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null
     [System.Windows.Forms.MessageBox]::Show(
         "mpv.exe not found. Install it with:`n`nwinget install --id shinchiro.mpv -e",
-        "SlowmoPlayer") | Out-Null
+        "MediaInspector_Pro") | Out-Null
     exit 1
 }
 
@@ -58,7 +62,7 @@ function Read-Json {
 # makes "open with" from Explorer behave like a normal app.
 if ($Files -and $Files.Count -gt 0) {
     try {
-        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", "slowmoplayer", [System.IO.Pipes.PipeDirection]::InOut)
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
         $pipe.Connect(300)
         $w = New-Object System.IO.StreamWriter($pipe); $w.AutoFlush = $true
         $full = (Resolve-Path -LiteralPath $Files[0]).Path
@@ -71,13 +75,20 @@ if ($Files -and $Files.Count -gt 0) {
 
 $mpvArgs = @("--config-dir=$Root\config")
 
-# Restore window geometry
+# The control panel writes config\render.conf when the renderer API is
+# switched. gpu-api cannot change on a running player, so it is applied here
+# instead - --include is parsed after mpv.conf, so it overrides it.
+$RenderConf = Join-Path $Root "config\render.conf"
+if (Test-Path $RenderConf) { $mpvArgs += "--include=$RenderConf" }
+
+# Only the POSITION is restored. The size is deliberately left to the Lua
+# script's fit-to-media pass, which runs on the first file-loaded event -
+# restoring a saved size here would flash the old window dimensions and,
+# worse, would be the size that wins for whatever the file turns out to be.
 $g = Read-Json $GeomFile
-if ($g -and $g.w -gt 200 -and $g.h -gt 200) {
-    $mpvArgs += "--geometry=$($g.w)x$($g.h)+$($g.x)+$($g.y)"
-    $mpvArgs += "--autofit-larger=95%x95%"
-} else {
-    $mpvArgs += "--geometry=70%x80%"
+if ($g -and $null -ne $g.x -and $null -ne $g.y) {
+    $sign = { param($n) if ($n -lt 0) { "$n" } else { "+$n" } }
+    $mpvArgs += "--geometry=$(& $sign ([int]$g.x))$(& $sign ([int]$g.y))"
 }
 
 # A file passed on the command line wins; otherwise resume the last one.
@@ -98,6 +109,8 @@ $argLine = ($mpvArgs | ForEach-Object {
 $proc = Start-Process -FilePath $mpv -ArgumentList $argLine -PassThru
 
 # Track the window rect until mpv exits, so the next launch reopens in place.
+# The size is recorded too, purely so a human can read the state file - the
+# launcher above only ever plays back x and y.
 $last = ""
 while (-not $proc.HasExited) {
     Start-Sleep -Milliseconds 1500
