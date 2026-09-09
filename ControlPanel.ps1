@@ -730,7 +730,10 @@ $form.Controls.Add($leftCol)
 $panel = New-Object System.Windows.Forms.FlowLayoutPanel
 $panel.Dock = "Fill"
 $panel.FlowDirection = "TopDown"
-$panel.WrapContents = $false
+# Wrap into a second column rather than one tall strip: the panel is meant to
+# live on a second monitor, and with this off the cards filled a 510px column
+# and left the rest of a 2500px-wide window empty.
+$panel.WrapContents = $true
 $panel.AutoScroll = $true
 $panel.BackColor = $ColFormBg
 $leftCol.Controls.Add($panel)
@@ -780,14 +783,27 @@ function Create-Card {
     $card = New-Object Win11Card
     $card.Width = $Width
     if ($Height -gt 0) { $card.Height = $Height; $card.AutoSize = $false }
-    else { $card.AutoSize = $true; $card.AutoSizeMode = "GrowAndShrink" }
+    else {
+        # A Panel's AutoSize derives its preferred WIDTH from non-docked
+        # children only. Both children added below are Dock=Top, so the
+        # preferred width collapsed to the 12+12px padding: every card
+        # rendered as an empty vertical sliver with its buttons wrapped out
+        # of view, and the content flow - being width-constrained to nothing
+        # - stacked one button per row and grew very tall.
+        # Pinning min and max width (a 0 in the height slot means
+        # "unconstrained") leaves AutoSize doing only the job it is wanted
+        # for here: growing the card down to fit its content.
+        $card.MinimumSize = New-Object System.Drawing.Size($Width, 0)
+        $card.MaximumSize = New-Object System.Drawing.Size($Width, 0)
+        $card.AutoSize = $true
+        $card.AutoSizeMode = "GrowAndShrink"
+    }
     $card.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 12)
     $Parent.Controls.Add($card)
 
     $headerPanel = New-Object System.Windows.Forms.Panel
     $headerPanel.Dock = "Top"; $headerPanel.Height = 24
     $headerPanel.BackColor = [System.Drawing.Color]::Transparent
-    $card.Controls.Add($headerPanel)
 
     $l = New-Object System.Windows.Forms.Label
     $l.Text = $Title.ToUpper()
@@ -803,7 +819,20 @@ function Create-Card {
     $content.FlowDirection = "LeftToRight"; $content.WrapContents = $true
     $content.BackColor = [System.Drawing.Color]::Transparent
     $content.Padding = New-Object System.Windows.Forms.Padding(0, 6, 0, 0)
+    # Pin the flow to the card's client width. Without this its preferred size
+    # is measured unconstrained - the buttons notionally fit two per row, so it
+    # reported roughly half the height it really needs, and the card AutoSized
+    # to that and clipped the bottom rows away. Docking set the *final* width
+    # correctly but never triggered a re-measure of the height.
+    $inner = $Width - ($card.Padding.Left + $card.Padding.Right)
+    $content.MinimumSize = New-Object System.Drawing.Size($inner, 0)
+    $content.MaximumSize = New-Object System.Drawing.Size($inner, 0)
+
+    # Add order matters and is the reverse of the visual order: among siblings
+    # that all Dock=Top, the one added LAST docks closest to the edge. Adding
+    # the header first put every card's title underneath its own buttons.
     $card.Controls.Add($content)
+    $card.Controls.Add($headerPanel)
 
     return $content
 }
