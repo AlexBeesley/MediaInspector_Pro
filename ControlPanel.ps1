@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # MediaInspector_Pro Control Panel (Windows 11 Fluent Acrylic Glass)
 # A high-performance control window with authentic Win11 styling.
 # Communicates with the player over mpv's JSON IPC socket, and
@@ -702,41 +702,28 @@ function Write-Log {
 # ============================================================
 # MAIN COLUMNS
 # ============================================================
-# Right column: Color grading, AI upscaler, crop, trim, settings
-$side = New-Object System.Windows.Forms.Panel
-$side.Dock = "Right"
-$side.Width = 490
-$side.Padding = New-Object System.Windows.Forms.Padding(8, 8, 14, 8)
-$side.BackColor = $ColFormBg
-$side.AutoScroll = $true
-$form.Controls.Add($side)
-
-$sideFlow = New-Object System.Windows.Forms.FlowLayoutPanel
-$sideFlow.Dock = "Fill"
-$sideFlow.FlowDirection = "TopDown"
-$sideFlow.WrapContents = $false
-$sideFlow.AutoScroll = $true
-$sideFlow.BackColor = $ColFormBg
-$side.Controls.Add($sideFlow)
-
-# Left column: Playback transport, navigation, image inspection, tools
-$leftCol = New-Object System.Windows.Forms.Panel
-$leftCol.Dock = "Fill"
-$leftCol.Padding = New-Object System.Windows.Forms.Padding(14, 8, 6, 8)
-$leftCol.BackColor = $ColFormBg
-$leftCol.AutoScroll = $true
-$form.Controls.Add($leftCol)
+# One grid for every card. This used to be a fixed 510px column on the left
+# plus a fixed 490px sidebar docked right, which left a large dead strip of
+# window between them at any real width. A single wrapping flow instead packs
+# the cards left-to-right and reflows them as the window is resized, so the
+# column count follows the space available rather than being baked in.
+#
+# All cards share one width ($CardW) so the result reads as a grid rather
+# than a ragged collage.
+$CardW = 510
 
 $panel = New-Object System.Windows.Forms.FlowLayoutPanel
 $panel.Dock = "Fill"
-$panel.FlowDirection = "TopDown"
-# Wrap into a second column rather than one tall strip: the panel is meant to
-# live on a second monitor, and with this off the cards filled a 510px column
-# and left the rest of a 2500px-wide window empty.
+$panel.FlowDirection = "LeftToRight"
 $panel.WrapContents = $true
 $panel.AutoScroll = $true
+$panel.Padding = New-Object System.Windows.Forms.Padding(14, 8, 14, 8)
 $panel.BackColor = $ColFormBg
-$leftCol.Controls.Add($panel)
+$form.Controls.Add($panel)
+
+# Every Create-Card call site still names one of these two; they are now the
+# same container, so cards land in the single grid wherever they are declared.
+$sideFlow = $panel
 
 $script:sectionLabels = @()
 $script:allWin11Buttons = @()
@@ -864,7 +851,7 @@ $W2 = 322   # 2 columns
 $W3 = 486   # 3 columns / full row
 
 # --- CARD 1: PLAYBACK & TRANSPORT ---
-$playCard = Create-Card $panel "Playback & Transport" 510
+$playCard = Create-Card $panel "Playback & Transport" $CardW
 $playBtn = Add-BtnCustom $playCard "⏵ Play / Pause" @("cycle", "pause") $W3 -Accent -Break
 [void](Add-BtnCustom $playCard "« -10s" @("seek", -10, "exact") $W1)
 [void](Add-BtnCustom $playCard "‹ -1s" @("seek", -1, "exact") $W1)
@@ -885,7 +872,7 @@ $playBtn = Add-BtnCustom $playCard "⏵ Play / Pause" @("cycle", "pause") $W3 -A
 [void](Add-BtnCustom $playCard "Export Frame" @("script-binding", "export_frame") $W1 -Break)
 
 # --- CARD 2: MEDIA NAVIGATION ---
-$navCard = Create-Card $panel "Media & Navigation" 510
+$navCard = Create-Card $panel "Media & Navigation" $CardW
 [void](Add-BtnCustom $navCard "Open Media..." $null $W2 -OnClick {
     $d = New-Object System.Windows.Forms.OpenFileDialog
     $d.Filter = $AllMediaFilter
@@ -901,7 +888,7 @@ $navCard = Create-Card $panel "Media & Navigation" 510
 })
 
 # --- CARD 3: IMAGE INSPECTION & ZOOM ---
-$zoomCard = Create-Card $panel "Image Inspection & Zoom" 510
+$zoomCard = Create-Card $panel "Image Inspection & Zoom" $CardW
 [void](Add-BtnCustom $zoomCard "Fit to Window" @("script-binding", "zoom_fit") $W1)
 [void](Add-BtnCustom $zoomCard "1:1 Actual Pixels" @("script-binding", "zoom_actual") $W1)
 [void](Add-BtnCustom $zoomCard "Fit Window to Media" @("script-binding", "fit_window") $W1 -Break)
@@ -916,7 +903,7 @@ $zoomCard = Create-Card $panel "Image Inspection & Zoom" 510
 })
 
 # --- CARD 4: DISPLAY, AUDIO & TOOLS ---
-$toolsCard = Create-Card $panel "Display, Audio & Tools" 510
+$toolsCard = Create-Card $panel "Display, Audio & Tools" $CardW
 [void](Add-BtnCustom $toolsCard "Fullscreen" @("cycle", "fullscreen") $W1 -Flag "fullscreen")
 [void](Add-BtnCustom $toolsCard "Always On Top" @("cycle", "ontop") $W1 -Flag "ontop")
 [void](Add-BtnCustom $toolsCard "Shortcuts Overlay" @("script-binding", "toggle_help") $W1 -Break)
@@ -986,7 +973,7 @@ function Add-CardBox {
 }
 
 # --- RIGHT CARD 1: VISUAL ADJUSTMENTS (COLOR GRADING) ---
-$lookCard = Create-Card $sideFlow "Visual Adjustments (Look)" 455
+$lookCard = Create-Card $sideFlow "Visual Adjustments (Look)" $CardW
 $script:adjCtl = @{}
 $script:lookHasFilter = $false
 
@@ -1126,7 +1113,7 @@ Add-SliderCustom $lookCard "vignette" "Vignette"
 [void](Add-CardText $lookCard "Double-click any slider to reset to 0. Applies to playback, export and trim." 420 -Dim -Break)
 
 # --- RIGHT CARD 2: AI UPSCALE & ENHANCEMENTS ---
-$upCard = Create-Card $sideFlow "AI Upscale & Enhancements" 455
+$upCard = Create-Card $sideFlow "AI Upscale & Enhancements" $CardW
 [void](Add-CardText $upCard "GPU: $($script:gpuName)" 420 -Dim -Break)
 
 [void](Add-CardText $upCard "Mode" 50)
@@ -1312,7 +1299,7 @@ $apiSel = Add-CardCombo $upCard @("D3D11 (RTX VSR)", "Vulkan") (State-Or "render
 })
 
 # --- RIGHT CARD 3: CROP ASPECT RATIO ---
-$cropCard = Create-Card $sideFlow "Crop Aspect Ratio" 455
+$cropCard = Create-Card $sideFlow "Crop Aspect Ratio" $CardW
 $script:cropRatioBtns = @()
 function Add-CropRatioCustom {
     param([string]$Label, [int]$Rw, [int]$Rh, [int]$Width = 72, [switch]$Break)
@@ -1348,7 +1335,7 @@ $cropY = Add-CardBox $cropCard "0" 55 -Break
 [void](Add-CardText $cropCard "Drag image inside crop. Alt+Arrows nudge." 420 -Dim -Break)
 
 # --- RIGHT CARD 4: TRIM & CLIP EXPORT ---
-$trimCard = Create-Card $sideFlow "Trim & Clip Export" 455
+$trimCard = Create-Card $sideFlow "Trim & Clip Export" $CardW
 [void](Add-CardText $trimCard "In" 26)
 $trimIn = Add-CardBox $trimCard "0" 95
 [void](Add-CardText $trimCard "Out" 30)
@@ -1392,7 +1379,7 @@ $trimOut = Add-CardBox $trimCard "" 95 -Break
 })
 
 # --- RIGHT CARD 5: WINDOW & EXPORT SETTINGS ---
-$setCard = Create-Card $sideFlow "Window & Export Settings" 455
+$setCard = Create-Card $sideFlow "Window & Export Settings" $CardW
 
 $fitWinToggle = New-Object Win11Toggle
 $fitWinToggle.Checked = [bool](State-Or "fitWindow" $true)
@@ -1432,7 +1419,7 @@ $expScale.Add_Leave({ Invoke-AutoRescan "export scale" })
 $expScaler.Add_SelectedIndexChanged({ Set-MpvSetting "export_scaler" $expScaler.SelectedItem; Invoke-AutoRescan "export resampler" })
 
 # --- RIGHT CARD 6: KEYBOARD SHORTCUTS ---
-$scCard = Create-Card $sideFlow "Keyboard Shortcuts" 455
+$scCard = Create-Card $sideFlow "Keyboard Shortcuts" $CardW
 $shortcuts = @(
     @("Left / Right or < >", "Prev / next file"),
     @("Shift+Left / Right", "Step one frame"),
@@ -1482,7 +1469,7 @@ function Set-Tier {
 }
 
 $script:baseFonts = @{}
-foreach ($c in @($panel.Controls) + @($sideFlow.Controls)) { $script:baseFonts[$c] = $c.Font.Size }
+foreach ($c in @($panel.Controls)) { $script:baseFonts[$c] = $c.Font.Size }
 $script:baseStatusFont = $headerSub.Font.Size
 $script:baseLogFont = $logBox.Font.Size
 
@@ -1694,3 +1681,5 @@ $form.Add_FormClosing({
 })
 
 [System.Windows.Forms.Application]::Run($form)
+
+
