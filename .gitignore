@@ -1,6 +1,12 @@
-state_*.json
+# Session state, crash logs and layout dumps - all regenerated at runtime.
+state_*
+
 Exports/*
 !Exports/.gitkeep
+
+# Build output. The sources in src/ and Build.ps1 are what is tracked.
 MediaInspector_Pro.exe
 SlowmoPlayer.exe
+*.pdb
+
 config/render.conf

@@ -1,6 +1,11 @@
 @echo off
-rem Launches MediaInspector_Pro via Launch.ps1, which restores the last file
-rem and window position, then remembers the window position while it runs.
-rem Drag any video, photo or audio file onto this to open it.
-rem The control panel stays off until you press Ctrl+P / the Panel button.
-start "" powershell -NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0Launch.ps1" %*
+rem Launches MediaInspector_Pro. The app is a real .exe now - one window with
+rem the picture and every control in it - so this is just a convenience
+rem wrapper that builds it on first run. Drag any video, photo or audio file
+rem onto this to open it.
+setlocal
+if not exist "%~dp0MediaInspector_Pro.exe" (
+    echo Building MediaInspector_Pro.exe ...
+    powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Build.ps1"
+)
+start "" "%~dp0MediaInspector_Pro.exe" %*

@@ -1,12 +1,10 @@
-# ============================================================
+﻿# ============================================================
 # Registers MediaInspector_Pro with Explorer for video, photo and
 # audio files.
 #
-# Explorer's "Open with" / default-app system only accepts a real .exe -
-# a .bat or .ps1 will not appear in the app picker, which is why setting
-# the default previously did nothing. So this builds a tiny
-# MediaInspector_Pro.exe shim (compiled locally, no downloads) that hands
-# the file to Launch.ps1, then registers that.
+# Explorer's "Open with" / default-app system only accepts a real .exe - a
+# .bat or .ps1 never appears in the app picker. MediaInspector_Pro.exe is
+# that real .exe (see Build.ps1), so this simply points Explorer at it.
 #
 # All keys are under HKCU - no admin, affects only this user.
 # Run with -Remove to undo.
@@ -72,46 +70,15 @@ if ($Remove) {
     return
 }
 
-if (-not (Test-Path $Launch)) { throw "Launch.ps1 not found beside this script." }
-
-# ---------- Build the shim exe ----------
-# WindowsApplication subsystem = no console window flashes on open.
-$src = @'
-using System;
-using System.Diagnostics;
-using System.IO;
-using System.Reflection;
-using System.Text;
-
-static class MediaInspectorShim {
-    static void Main(string[] argv) {
-        string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        string launch = Path.Combine(dir, "Launch.ps1");
-
-        StringBuilder a = new StringBuilder();
-        a.Append("-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"");
-        a.Append(launch);
-        a.Append("\"");
-        foreach (string f in argv) {
-            a.Append(" \"");
-            a.Append(f);
-            a.Append("\"");
-        }
-
-        ProcessStartInfo si = new ProcessStartInfo("powershell.exe", a.ToString());
-        si.UseShellExecute = false;
-        si.CreateNoWindow = true;
-        si.WorkingDirectory = dir;
-        Process.Start(si);
-    }
+# ---------- The app itself ----------
+# MediaInspector_Pro.exe is now a real application built by Build.ps1, not a
+# shim around a .ps1 - so this registers the existing binary rather than
+# generating one. It must never rebuild it here: doing so would overwrite
+# the app with a stub.
+if (-not (Test-Path $Exe)) {
+    throw "MediaInspector_Pro.exe not found. Build it first:  .\Build.ps1"
 }
-'@
-
-Write-Host "Building $AppName ..."
-if (Test-Path $Exe) { Remove-Item $Exe -Force -ErrorAction SilentlyContinue }
-Add-Type -TypeDefinition $src -OutputAssembly $Exe -OutputType WindowsApplication
-if (-not (Test-Path $Exe)) { throw "Failed to build $AppName" }
-Write-Host "Built $Exe"
+Write-Host "Registering $Exe"
 
 $icon = "C:\Program Files\MPV Player\mpv.exe,0"
 if (-not (Test-Path "C:\Program Files\MPV Player\mpv.exe")) {
@@ -172,3 +139,4 @@ Write-Host "the default-app choice with a signed hash, so no script can set it):
 Write-Host "  Right-click a file  ->  Open with  ->  Choose another app"
 Write-Host "  ->  pick MediaInspector_Pro  ->  tick 'Always use this app'"
 Write-Host "It appears in that list because it is a real .exe."
+

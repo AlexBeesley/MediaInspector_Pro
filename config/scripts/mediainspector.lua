@@ -193,6 +193,13 @@ local function setting_bool(name, default)
     return v == "yes" or v == "true" or v == "1"
 end
 
+-- MediaInspector_Pro.exe hosts mpv inside its own window (--wid) and draws
+-- the controls there. Read from --script-opts rather than user-data, because
+-- this has to be known at load time - before the host's IPC connection
+-- exists - to decide who owns window sizing and whether the separate
+-- PowerShell panel is even a thing.
+local embedded = (mp.get_opt("mi-embedded") == "yes")
+
 -- ============================================================
 -- UI metrics
 --   Declared up here because the window-fitting code below has to know how
@@ -266,7 +273,11 @@ local function view_size()
 end
 
 local function fit_window()
-    if not setting_bool("fit_window", true) then return false end
+    -- Embedded, mpv is a child window and cannot resize the frame around it;
+    -- the host does the fitting. Report success either way so the retry loop
+    -- below stops instead of spinning for two seconds on every file.
+    if embedded then return true end
+    if not setting_bool("fit_window", true) then return true end
     if mp.get_property_bool("fullscreen") then return true end
     if mp.get_property_bool("window-maximized") then return true end
     if mp.get_property_bool("window-minimized") then return false end
@@ -1202,6 +1213,10 @@ local function launch_control_panel()
 end
 
 local function toggle_control_panel()
+    if embedded then
+        emit("The controls are in this window - the separate panel is only for the .ps1 launcher", 3)
+        return
+    end
     if control_panel_running() then
         kill_control_panel()
         panel_open = false -- force-killed, so it never clears its own heartbeat
@@ -1212,7 +1227,7 @@ local function toggle_control_panel()
     end
 end
 
-mp.register_event("shutdown", kill_control_panel)
+if not embedded then mp.register_event("shutdown", kill_control_panel) end
 
 -- ============================================================
 -- Control bar
