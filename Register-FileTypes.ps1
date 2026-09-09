@@ -15,7 +15,6 @@ param([switch]$Remove)
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Exe = Join-Path $Root "MediaInspector_Pro.exe"
-$Launch = Join-Path $Root "Launch.ps1"
 $AppName = "MediaInspector_Pro.exe"
 $Classes = "HKCU:\Software\Classes"
 
@@ -139,4 +138,5 @@ Write-Host "the default-app choice with a signed hash, so no script can set it):
 Write-Host "  Right-click a file  ->  Open with  ->  Choose another app"
 Write-Host "  ->  pick MediaInspector_Pro  ->  tick 'Always use this app'"
 Write-Host "It appears in that list because it is a real .exe."
+
 

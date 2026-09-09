@@ -12,13 +12,44 @@ reinventing a media pipeline.
 
 ## Launching
 
-Double-click **MediaInspector_Pro.bat**, or drag any media file onto it.
+Run **MediaInspector_Pro.exe**, or drag any media file onto it. If the exe
+isn't built yet, **MediaInspector_Pro.bat** builds it and then starts it.
 
 With no file given it **reopens the last file you had open**, in the **same
-window position** as last time, at the **UI scale you last set**.
+window position** as last time, at the **UI scale you last set**. Opening a
+file while a window is already up reuses that window rather than starting a
+second player — both would otherwise fight over the same IPC pipe.
 
 Run **Register-FileTypes.bat** once to get "Open with MediaInspector_Pro" in
 Explorer's right-click menu for every supported extension.
+
+## Building
+
+```
+.\Build.ps1          # -Run to launch it afterwards
+```
+
+Compiles `src\*.cs` with the C# compiler that ships with the .NET Framework,
+so there is no SDK, no NuGet and no toolchain to install. Output is a single
+~65KB WinExe. Drop an `app.ico` beside `Build.ps1` and it is used as the
+icon automatically.
+
+## One window
+
+The app hosts mpv **inside itself**: mpv is started with `--wid` pointing at
+a panel the app owns, so the picture renders as a child window and the
+controls sit in the same frame. There is no second window and no separate
+control-panel process.
+
+The split between picture and controls is a draggable splitter. Widening the
+window gives the extra space to the **picture**; dragging the splitter is
+what resizes the control pane, and the card grid reflows into more columns
+as it widens (measured 1 → 2 → 3).
+
+Because mpv is a child window it cannot resize or fullscreen the frame around
+it, so the host owns fit-to-frame sizing, fullscreen, always-on-top, and the
+renderer restart. The Lua script is told it is embedded via `--script-opts`
+and stands down from those jobs.
 
 ## Fit-to-frame windows
 
@@ -94,7 +125,6 @@ it, so the image is letterboxed slightly instead of being overlaid.
 | `[` / `]`, `Backspace` | Speed nudge, reset speed |
 | `Space`, `f` | Play/pause, fullscreen (double-click fullscreen disabled) |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | UI scale up / down / reset |
-| `Ctrl+P` | Show / hide the control panel window |
 | `h` / `F1` | Shortcuts overlay |
 | Wheel | Shuttle speed on video/audio, zoom on a photo |
 | `Ctrl` + Wheel | Zoom, whatever is open |
@@ -214,10 +244,10 @@ picture is resampled to the window whichever route is picked. The default is
 `ewa_lanczos4sharpest`.
 
 The **Renderer API** dropdown switches libplacebo between D3D11 and Vulkan.
-`gpu-api` cannot change on a running player, so the panel writes
-`config/render.conf` and restarts the player; `Launch.ps1` passes that file
-to mpv with `--include`. Vulkan is what enables Vulkan video decoding; D3D11
-is what RTX Video Super Resolution needs, so the two are mutually exclusive.
+`gpu-api` cannot change on a running player, so the app writes
+`config/render.conf` and restarts mpv in place — the window and every
+control stay put. Vulkan is what enables Vulkan video decoding; D3D11 is
+what RTX Video Super Resolution needs, so the two are mutually exclusive.
 
 ### What is deliberately missing
 
@@ -236,22 +266,24 @@ real frame rate: **yellow** at 30fps or below, **blue** around 60fps,
 slow-mo-ing. Photos are **amber** and audio **cyan**. The control panel
 mirrors whichever is active.
 
-## Control panel window
+## Controls
 
-**ControlPanel.ps1** is a separate window for a second monitor, with a
-button for every action, a live status readout, and an **Activity** log.
-It's off by default — open it with `Ctrl+P`, the **Panel** button, or
-`ControlPanel.bat`.
+Every control is a card in the grid beside the picture: transport, media
+navigation, zoom and rotation, display/audio/tools, the colour sliders, GPU
+upscaling, crop, trim, export settings and the shortcut list.
 
-It talks to the player over mpv's JSON IPC socket (real player commands, not
-simulated keypresses), mirrors the accent colour, remembers its own window
-position and every setting in it, and auto-reconnects if the player isn't up
-yet. Buttons that don't apply to the open file are dimmed rather than
-hidden. While it's open, messages that would pop up over the picture go to
-its Activity log instead. Closing either window closes both.
+They drive the player over mpv's JSON IPC socket — real player commands, not
+simulated keypresses. The grid mirrors the media-kind accent colour, dims
+buttons that don't apply to the open file rather than hiding them, and
+remembers every setting between runs in `state_panel.ini`. Messages that
+would pop up over the picture go to the **Activity log** along the bottom.
 
-Note: the IPC socket name is fixed, so the panel drives one player instance
-at a time — fine for normal use, not for two files open side by side.
+`--dump-layout` builds the window, writes the real geometry of every card to
+`state_layout.txt` and exits — layout faults are invisible in code review and
+obvious in numbers.
+
+Note: the IPC socket name is fixed, so one instance runs at a time — fine for
+normal use, not for two files open side by side.
 
 ## Frame / image export
 
@@ -288,13 +320,19 @@ for it. Everything after decode (scaling, colour, output) is GPU regardless.
 
 ```
 MediaInspector_Pro/
-├── MediaInspector_Pro.bat   launcher (drag media onto it)
-├── Launch.ps1               restores last file + window position
-├── ControlPanel.bat         opens just the control panel
-├── ControlPanel.ps1         the second-monitor control window
+├── MediaInspector_Pro.exe   the app (built by Build.ps1)
+├── MediaInspector_Pro.bat   builds it if missing, then runs it
+├── Build.ps1                compiles src\*.cs -> the exe
 ├── Register-FileTypes.bat   adds the Explorer right-click verb
+├── src/                     C# sources
+│   ├── Program.cs           entry point, single instance, --dump-layout
+│   ├── MainForm.cs          window, embedding, status, fit-to-frame
+│   ├── Cards.cs             the control grid
+│   ├── Ipc.cs               mpv JSON IPC over a named pipe
+│   ├── Player.cs            mpv process + --wid embedding
+│   └── Controls.cs          custom dark-theme controls
 ├── Exports/                 exported frames and clips land here
-├── state_*.json             saved session state (auto-generated)
+├── state_*                  saved session state (auto-generated)
 └── config/
     ├── mpv.conf             GPU, cache, export, IPC settings
     ├── input.conf           keybindings

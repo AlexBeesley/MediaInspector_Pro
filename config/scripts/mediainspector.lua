@@ -311,8 +311,8 @@ local function fit_window()
         win_h = math.max(320, math.floor(vh * s + c + 0.5))
     end
 
-    -- Geometry with only a size resizes without moving, so the window stays
-    -- where the user - or Launch.ps1's restored position - put it.
+    -- Geometry with only a size resizes without moving, so the window
+    -- stays where the user put it.
     mp.set_property("geometry", string.format("%dx%d", win_w, win_h))
     return true
 end
@@ -1179,57 +1179,6 @@ local function next_media() play_sibling(1) end
 local function prev_media() play_sibling(-1) end
 
 -- ============================================================
--- Control panel process (separate window)
--- ============================================================
-
-local function panel_query(script)
-    return mp.command_native({
-        name = "subprocess", capture_stdout = true, playback_only = false,
-        args = { "powershell", "-NoProfile", "-NonInteractive", "-Command", script },
-    })
-end
-
--- $PID excludes the querying process itself, whose own command line
--- contains the search text and would otherwise always match.
-local FIND_PANEL =
-    "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' " ..
-    "-and $_.CommandLine -like '*ControlPanel.ps1*' -and $_.ProcessId -ne $PID }"
-
-local function control_panel_running()
-    local r = panel_query("if (" .. FIND_PANEL .. ") { 'yes' }")
-    return r ~= nil and r.status == 0 and r.stdout ~= nil and r.stdout:find("yes") ~= nil
-end
-
-local function kill_control_panel()
-    panel_query(FIND_PANEL .. " | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
-end
-
-local function launch_control_panel()
-    mp.command_native({
-        name = "subprocess", playback_only = false, detach = true,
-        args = { "powershell", "-NoLogo", "-NoProfile", "-WindowStyle", "Hidden",
-                 "-ExecutionPolicy", "Bypass", "-File", root() .. "\\ControlPanel.ps1" },
-    })
-end
-
-local function toggle_control_panel()
-    if embedded then
-        emit("The controls are in this window - the separate panel is only for the .ps1 launcher", 3)
-        return
-    end
-    if control_panel_running() then
-        kill_control_panel()
-        panel_open = false -- force-killed, so it never clears its own heartbeat
-        emit("Control panel closed", 1.2)
-    else
-        launch_control_panel()
-        emit("Control panel opened", 1.2)
-    end
-end
-
-if not embedded then mp.register_event("shutdown", kill_control_panel) end
-
--- ============================================================
 -- Control bar
 -- ============================================================
 
@@ -1263,7 +1212,6 @@ local SHORTCUTS = {
     { "[ / ]   Backspace", "Speed nudge, reset speed" },
     { "Space   f", "Play/pause, fullscreen" },
     { "Ctrl+= / Ctrl+- / Ctrl+0", "UI scale up / down / reset" },
-    { "Ctrl+P", "Show / hide control panel window" },
     { "h  /  F1", "Toggle this panel" },
     { "Wheel", "Video: shuttle speed.  Photo: zoom" },
     { "Ctrl+Wheel   Drag", "Zoom   /   pan a zoomed image" },
@@ -1472,7 +1420,6 @@ render = function()
     end
     left(34 * S, "i", false, show_info)
     left(30 * S, "?", help_visible, toggle_help)
-    left(56 * S, "Panel", false, toggle_control_panel)
 
     -- ---- right cluster ----
     local up_label, up_on = upscale_label()
@@ -1807,8 +1754,9 @@ end
 
 -- ============================================================
 -- Session state: last file + UI scale, so the next launch resumes.
--- Launch.ps1 reads this; window position is saved there (mpv exposes no
--- window-position property, so it needs the Win32 window rect).
+-- MediaInspector_Pro.exe reads this to reopen the last file; it saves its
+-- own window position separately, since mpv exposes no window-position
+-- property and is a child window here anyway.
 -- ============================================================
 
 -- Remember the path as it loads: by the time the shutdown event fires mpv
@@ -1930,7 +1878,6 @@ mp.add_key_binding(nil, "audio_menu", audio_menu)
 mp.add_key_binding(nil, "next_media", next_media)
 mp.add_key_binding(nil, "prev_media", prev_media)
 mp.add_key_binding(nil, "toggle_help", toggle_help)
-mp.add_key_binding(nil, "toggle_control_panel", toggle_control_panel)
 mp.add_key_binding(nil, "hdr_toggle", hdr_toggle)
 mp.add_key_binding(nil, "ui_scale_up", ui_scale_up)
 mp.add_key_binding(nil, "ui_scale_down", ui_scale_down)
