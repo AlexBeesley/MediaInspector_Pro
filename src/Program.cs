@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -85,7 +85,10 @@ public static class Program {
                 var split = grid.Parent.Parent as SplitContainer;
                 if (split != null) {
                     try {
-                        split.SplitterDistance = Math.Max(split.Panel1MinSize, w / 3);
+                        // Drag it out to where a second card column becomes
+                        // possible, which is the behaviour being checked.
+                        split.SplitterDistance = Math.Max(split.Panel1MinSize,
+                            Math.Min(w - split.Panel2MinSize - split.SplitterWidth, 2 * (MainForm.CardW + 10) + 30));
                         f.PerformLayout();
                         Application.DoEvents();
                         f.PerformLayout();
@@ -100,7 +103,7 @@ public static class Program {
                         }
                         sb.AppendLine("            splitter dragged -> grid " + grid.ClientSize.Width +
                                       "  columns=" + xs2.Count + "  clipped=" + clipped2);
-                        split.SplitterDistance = Math.Max(split.Panel1MinSize, w - (MainForm.CardW + 34));
+                        split.SplitterDistance = MainForm.CardW + 34;
                     } catch { }
                 }
                 if (w == 1600) {
@@ -132,3 +135,4 @@ public static class Program {
     }
 }
 }
+

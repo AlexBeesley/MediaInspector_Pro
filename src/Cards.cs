@@ -547,7 +547,6 @@ public partial class MainForm {
         _player.Quit(_ipc);
         _ipc.Disconnect();
         _pushedSettings = false;
-        _lastLogSeq = 0;
         System.Threading.Thread.Sleep(600);
         _player.Start(_videoHost.Handle, _configDir, current);
     }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -54,12 +54,10 @@ public partial class MainForm : Win11Form {
     private FlowLayoutPanel _grid;
     private Label _status;
     private Panel _accent;
-    private TextBox _logBox;
-    private Label _logLabel;
 
     private Timer _poll;
     private bool _pushedSettings;
-    private int _lastLogSeq;
+    private readonly List<string> _recent = new List<string>();
     private string _tierNow = "yellow";
     private string _kindNow = "";
     private string _lastPath = "";
@@ -85,7 +83,6 @@ public partial class MainForm : Win11Form {
         AllowDrop = true;
 
         BuildHeader();
-        BuildLog();
         BuildBody();
         BuildCards();
 
@@ -121,54 +118,6 @@ public partial class MainForm : Win11Form {
         Controls.Add(header);
     }
 
-    private void BuildLog() {
-        var wrap = new Panel();
-        wrap.Dock = DockStyle.Bottom;
-        wrap.Height = 140;
-        wrap.Padding = new Padding(12, 4, 12, 10);
-        wrap.BackColor = Theme.FormBg;
-
-        var card = new Win11Card();
-        card.Dock = DockStyle.Fill;
-
-        var top = new Panel();
-        top.Dock = DockStyle.Top;
-        top.Height = 22;
-        top.BackColor = Color.Transparent;
-
-        _logLabel = new Label();
-        _logLabel.Dock = DockStyle.Left;
-        _logLabel.AutoSize = true;
-        _logLabel.Text = "ACTIVITY LOG";
-        _logLabel.ForeColor = Theme.Yellow;
-        _logLabel.Font = new Font("Segoe UI", 8f, FontStyle.Bold);
-        top.Controls.Add(_logLabel);
-
-        var clear = new Win11Button();
-        clear.Text = "Clear";
-        clear.Size = new Size(70, 22);
-        clear.Dock = DockStyle.Right;
-        clear.Click += delegate { _logBox.Clear(); };
-        top.Controls.Add(clear);
-
-        _logBox = new TextBox();
-        _logBox.Multiline = true;
-        _logBox.ReadOnly = true;
-        _logBox.ScrollBars = ScrollBars.Vertical;
-        _logBox.Dock = DockStyle.Fill;
-        _logBox.BackColor = Theme.Input;
-        _logBox.ForeColor = Theme.Text;
-        _logBox.BorderStyle = BorderStyle.None;
-        _logBox.Font = new Font("Consolas", 8.5f);
-
-        // Reverse visual order: among Dock=Top siblings the last added sits
-        // closest to the edge.
-        card.Controls.Add(_logBox);
-        card.Controls.Add(top);
-        wrap.Controls.Add(card);
-        Controls.Add(wrap);
-    }
-
     private void BuildBody() {
         _split = new SplitContainer();
         // Give it a real size BEFORE the min sizes: SplitContainer validates
@@ -178,24 +127,19 @@ public partial class MainForm : Win11Form {
         _split.Orientation = Orientation.Vertical;
         _split.BackColor = Theme.Border;
         _split.SplitterWidth = 6;
-        _split.Panel1MinSize = 320;
-        _split.Panel2MinSize = CardW + 34;
+        // Controls left, picture right.
+        _split.Panel1MinSize = CardW + 34;
+        _split.Panel2MinSize = 320;
         // Widening the window should give the extra room to the picture, not
         // silently re-proportion the controls. Dragging the splitter is what
         // changes the control pane - and with it the number of card columns.
-        _split.FixedPanel = FixedPanel.Panel2;
-        try { _split.SplitterDistance = _split.Width - (CardW + 34); } catch { }
+        _split.FixedPanel = FixedPanel.Panel1;
+        try { _split.SplitterDistance = CardW + 34; } catch { }
         _split.Dock = DockStyle.Fill;
 
-        _videoHost = new Panel();
-        _videoHost.Dock = DockStyle.Fill;
-        _videoHost.BackColor = Color.Black;
-        _split.Panel1.Controls.Add(_videoHost);
-        _split.Panel1.BackColor = Color.Black;
-
-        // The controls live in one wrapping grid, and the splitter makes the
-        // divide between picture and controls draggable - so the number of
-        // card columns follows whatever the user gives it.
+        // The controls live in one wrapping grid; the splitter makes the
+        // divide draggable, so the number of card columns follows whatever
+        // width it is given.
         _grid = new FlowLayoutPanel();
         _grid.Dock = DockStyle.Fill;
         _grid.FlowDirection = FlowDirection.LeftToRight;
@@ -203,8 +147,14 @@ public partial class MainForm : Win11Form {
         _grid.AutoScroll = true;
         _grid.Padding = new Padding(10, 8, 10, 8);
         _grid.BackColor = Theme.FormBg;
-        _split.Panel2.Controls.Add(_grid);
-        _split.Panel2.BackColor = Theme.FormBg;
+        _split.Panel1.Controls.Add(_grid);
+        _split.Panel1.BackColor = Theme.FormBg;
+
+        _videoHost = new Panel();
+        _videoHost.Dock = DockStyle.Fill;
+        _videoHost.BackColor = Color.Black;
+        _split.Panel2.Controls.Add(_videoHost);
+        _split.Panel2.BackColor = Color.Black;
 
         Controls.Add(_split);
         _split.BringToFront();
@@ -214,10 +164,7 @@ public partial class MainForm : Win11Form {
 
     private void OnShown(object sender, EventArgs e) {
         // Give the split a sane starting divide once real dimensions exist.
-        try {
-            int want = _split.Width - (CardW + 34);
-            if (want > _split.Panel1MinSize) _split.SplitterDistance = want;
-        } catch { }
+        try { _split.SplitterDistance = CardW + 34; } catch { }
 
         if (!_player.Start(_videoHost.Handle, _configDir, _startFile)) {
             MessageBox.Show(
@@ -258,14 +205,13 @@ public partial class MainForm : Win11Form {
         _player.ResizeChildTo(_videoHost.Handle, _videoHost.ClientSize.Width, _videoHost.ClientSize.Height);
     }
 
+    // There is no log pane any more. Feedback goes where the eye already is:
+    // on the picture, via mpv's own OSD - the same place the player's own
+    // messages appear, so there is one channel rather than two.
     public void Log(string text) {
-        if (_logBox == null) return;
-        _logBox.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + text + "\r\n");
-        if (_logBox.TextLength > 12000) {
-            _logBox.Text = _logBox.Text.Substring(_logBox.TextLength - 9000);
-            _logBox.SelectionStart = _logBox.TextLength;
-            _logBox.ScrollToCaret();
-        }
+        _recent.Add(DateTime.Now.ToString("HH:mm:ss") + "  " + text);
+        if (_recent.Count > 80) _recent.RemoveAt(0);
+        if (_ipc.Connected) _ipc.Command("show-text", text, 2600);
     }
 
     // ---------------- polling ----------------
@@ -288,11 +234,8 @@ public partial class MainForm : Win11Form {
             _status.ForeColor = Color.Orange;
             return;
         }
-
-        // Tell the script its messages belong in our log, and that it is
-        // embedded so it does not spawn the old separate panel or fight us
-        // over window geometry.
-        _ipc.Command("set_property", "user-data/mi/panel_open", true);
+        // No log pane now, so the script keeps showing its own messages as
+        // OSD over the picture rather than routing them to us.
         _ipc.SetUserData("embedded", "yes");
 
         if (!_pushedSettings) {
@@ -300,8 +243,6 @@ public partial class MainForm : Win11Form {
             _pushedSettings = true;
             RequestLook();
         }
-
-        DrainLog();
 
         string tier = _ipc.GetString("user-data/mi/tier");
         if (!string.IsNullOrEmpty(tier) && tier != _tierNow) {
@@ -324,39 +265,6 @@ public partial class MainForm : Win11Form {
 
         UpdateStatus(paused.Value);
         SyncVideoChild();
-    }
-
-    private void DrainLog() {
-        string raw = _ipc.GetString("user-data/mi/log");
-        if (string.IsNullOrEmpty(raw)) return;
-        // Entries look like {"seq":N,"text":"..."} - pulled out by hand rather
-        // than parsed, since this is the only array we ever read.
-        int i = 0;
-        while (true) {
-            int s = raw.IndexOf("\"seq\":", i, StringComparison.Ordinal);
-            if (s < 0) break;
-            int numStart = s + 6;
-            int numEnd = numStart;
-            while (numEnd < raw.Length && (char.IsDigit(raw[numEnd]))) numEnd++;
-            int seq;
-            if (!int.TryParse(raw.Substring(numStart, numEnd - numStart), out seq)) break;
-
-            int t = raw.IndexOf("\"text\":\"", numEnd, StringComparison.Ordinal);
-            if (t < 0) break;
-            t += 8;
-            var sb = new System.Text.StringBuilder();
-            int k = t;
-            while (k < raw.Length) {
-                if (raw[k] == '\\') { if (k + 1 < raw.Length) { sb.Append(raw[k]).Append(raw[k + 1]); k += 2; continue; } break; }
-                if (raw[k] == '"') break;
-                sb.Append(raw[k]); k++;
-            }
-            if (seq > _lastLogSeq) {
-                _lastLogSeq = seq;
-                _logBox.AppendText(Json.Unescape(sb.ToString()) + "\r\n");
-            }
-            i = k;
-        }
     }
 
     private void UpdateStatus(bool paused) {
@@ -410,7 +318,6 @@ public partial class MainForm : Win11Form {
 
     private void ApplyTier(Color c) {
         _accent.BackColor = c;
-        _logLabel.ForeColor = c;
         foreach (Label l in _sectionLabels) l.ForeColor = c;
         foreach (Win11Button b in _buttons) b.AccentColor = c;
         Invalidate(true);
@@ -452,3 +359,4 @@ public partial class MainForm : Win11Form {
     }
 }
 }
+
