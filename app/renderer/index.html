@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MediaInspector2</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="head">
+    <div id="status">
+      <div id="line1">Starting player…</div>
+      <div id="line2"></div>
+    </div>
+    <div id="headbtns">
+      <button class="btn" data-act="open">Open…</button>
+      <button class="btn" data-act="crop">Crop</button>
+      <button class="btn" data-act="fullscreen">Fullscreen</button>
+      <button class="btn" data-act="ontop">On top</button>
+    </div>
+    <div id="accent"></div>
+  </header>
+
+  <main id="body">
+    <aside id="panel"><div id="cards"></div></aside>
+    <div id="splitter" title="Drag to resize. Double-click to fit the panel to the media."></div>
+    <section id="stage">
+      <div id="hint">The picture is drawn here by the player.</div>
+    </section>
+  </main>
+
+  <div id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

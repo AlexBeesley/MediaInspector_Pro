@@ -1,0 +1,288 @@
+/* The palette is the one the on-video bar uses (config/scripts/mediainspector.lua)
+   so the controls and the picture read as one app. --accent is rewritten at
+   runtime from the media kind the player reports. */
+:root {
+  --bg: #12121a;
+  --card: #181820;
+  --input: #0e0e12;
+  --border: #2e2e38;
+  --border-hi: #52525f;
+  --text: #dcdcdc;
+  --dim: #8c8c96;
+  --accent: #ffd000;
+  --accent-ink: #101014;
+  --danger: #5f1e23;
+  --danger-hi: #963036;
+  --radius: 8px;
+  --btn-radius: 6px;
+  --panel-w: 504px;
+  --head-h: 58px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+}
+
+/* ---------------------------------------------------------------- header */
+
+#head {
+  position: relative;
+  height: var(--head-h);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: #14141a;
+  border-bottom: 1px solid var(--border);
+}
+
+#status { flex: 1 1 auto; min-width: 0; font-family: Consolas, "Cascadia Mono", monospace; }
+#line1 { font-size: 13px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#line2 { font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#headbtns { display: flex; gap: 6px; flex: 0 0 auto; }
+
+#accent {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 3px;
+  background: var(--accent);
+}
+
+/* ---------------------------------------------------------------- body */
+
+#body {
+  display: flex;
+  height: calc(100% - var(--head-h));
+}
+
+#panel {
+  width: var(--panel-w);
+  flex: 0 0 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px;
+  background: var(--bg);
+}
+
+/* The whole point of the rebuild: cards flow into as many columns as the panel
+   is wide, instead of a fixed grid that had to be dragged to fit.
+
+   Multi-column rather than grid, because a grid puts each card in a fixed cell
+   and leaves a hole under every short one. Columns pack vertically and the
+   break rules keep a card whole. */
+#cards {
+  columns: 384px;
+  column-gap: 10px;
+}
+#cards > .card {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  margin-bottom: 10px;
+}
+
+#splitter {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: var(--border);
+}
+#splitter:hover, #splitter.dragging { background: var(--accent); }
+
+#stage {
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+  background: #000;
+  display: grid;
+  place-items: center;
+}
+#hint { color: #2a2a32; font-size: 12px; }
+
+body.dragover #stage { outline: 2px dashed var(--accent); outline-offset: -6px; }
+
+/* ---------------------------------------------------------------- cards */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px 12px;
+  position: relative;
+  overflow: hidden;
+}
+.card::before {
+  /* the specular top line the WinForms cards drew by hand */
+  content: "";
+  position: absolute;
+  left: 8px; right: 8px; top: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.card > h2 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.row:last-child { margin-bottom: 0; }
+.row.tight { gap: 4px; }
+.row.ratios { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.grow { flex: 1 1 auto; }
+.hint { color: var(--dim); font-size: 11.5px; margin: 2px 0 6px; }
+.label { color: var(--text); font-size: 12px; min-width: 84px; }
+.sep { flex-basis: 100%; height: 0; }
+.section { color: var(--dim); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; margin: 8px 0 2px; }
+
+/* ---------------------------------------------------------------- controls */
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--border-hi);
+  background: #24242c;
+  color: #fff;
+  border-radius: var(--btn-radius);
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .09s ease, border-color .09s ease;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: #30303a; border-color: #6a6a7a; }
+.btn:active:not(:disabled) { background: #1c1c24; }
+.btn:disabled { color: #5a5a62; background: #191920; border-color: #262630; cursor: default; }
+.btn.grow { flex: 1 1 auto; }
+
+.btn.accent { background: var(--accent); color: var(--accent-ink); border-color: rgba(255,255,255,.45); font-weight: 600; }
+.btn.accent:hover:not(:disabled) { filter: brightness(1.08); }
+.btn.danger { background: var(--danger); border-color: var(--danger-hi); }
+.btn.danger:hover:not(:disabled) { background: #7c2831; }
+.btn.on { background: var(--accent); color: var(--accent-ink); border-color: rgba(255,255,255,.45); }
+
+input[type="text"], select {
+  background: var(--input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 6px 7px;
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+}
+input[type="text"] { font-family: Consolas, "Cascadia Mono", monospace; }
+input[type="text"]:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+
+/* Win11-style switch */
+.tog {
+  appearance: none;
+  width: 38px; height: 20px;
+  border-radius: 10px;
+  background: #2c2c34;
+  border: 1px solid #4b4b58;
+  position: relative;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background .12s ease;
+}
+.tog::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #dcdce6;
+  transition: transform .12s ease, background .12s ease;
+}
+.tog:checked { background: var(--accent); border-color: var(--accent); }
+.tog:checked::after { transform: translateX(18px); background: #12121a; }
+
+/* Slider, matching the on-video one: white disc, accent ring, accent fill */
+.slider-row { display: grid; grid-template-columns: 84px 1fr 42px; gap: 8px; align-items: center; margin-bottom: 4px; }
+.slider-row .val { font-family: Consolas, monospace; font-size: 11.5px; color: var(--dim); text-align: right; }
+input[type="range"] {
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+/* Fills out from zero, not from the left end: on a -100..100 control the
+   filled part is the distance from centre, the way the on-video sliders draw. */
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right,
+    #2a2a32 0, #2a2a32 var(--a, 0%),
+    var(--accent) var(--a, 0%), var(--accent) var(--b, 0%),
+    #2a2a32 var(--b, 0%), #2a2a32 100%);
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px; height: 14px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--accent);
+}
+
+.shaders {
+  border: 1px solid var(--border);
+  background: var(--input);
+  border-radius: 4px;
+  max-height: 132px;
+  overflow-y: auto;
+  padding: 4px 6px;
+  width: 100%;
+}
+.shaders label { display: flex; gap: 7px; align-items: center; font-size: 12px; padding: 2px 0; cursor: pointer; }
+.shaders input { accent-color: var(--accent); }
+
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
+.keys dt { color: var(--accent); font-family: Consolas, monospace; font-size: 11.5px; white-space: nowrap; }
+.keys dd { margin: 0; color: var(--dim); }
+
+/* ---------------------------------------------------------------- toast */
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translate(-50%, 14px);
+  background: #1c1c24;
+  border: 1px solid var(--border-hi);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+  max-width: 60vw;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a2a34; border-radius: 5px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: #3a3a48; }
