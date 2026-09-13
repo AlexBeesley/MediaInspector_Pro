@@ -4,13 +4,9 @@ state_*
 Exports/*
 !Exports/.gitkeep
 
-# Build output. The sources in src/, app/ and Build.ps1 are what is tracked.
-MediaInspector_Pro.exe
-SlowmoPlayer.exe
-*.pdb
-
-# MediaInspector2's packaged build - ~300MB of bundled Chromium, rebuilt with
-# `npm run build` in app/.
+# Build output. The sources in app/ are what is tracked; the packaged build is
+# ~300MB of bundled Chromium, rebuilt with `npm run build` in app/.
 dist/
+*.pdb
 
 config/render.conf

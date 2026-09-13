@@ -120,7 +120,7 @@ body.dragover #stage { outline: 2px dashed var(--accent); outline-offset: -6px; 
   overflow: hidden;
 }
 .card::before {
-  /* the specular top line the WinForms cards drew by hand */
+  /* specular top line: a card should look lit, not outlined */
   content: "";
   position: absolute;
   left: 8px; right: 8px; top: 0;

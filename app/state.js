@@ -1,7 +1,7 @@
 'use strict';
 // Panel state: window bounds, the divide between cards and picture, and every
-// card setting. JSON this time - the WinForms shell used a flat ini because it
-// had no parser to hand, which is not a constraint here.
+// card setting, as JSON so nested groups (the colour sliders, the shader list)
+// do not have to be flattened into key=value.
 
 const fs = require('fs');
 const path = require('path');

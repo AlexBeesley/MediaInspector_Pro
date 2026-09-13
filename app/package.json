@@ -1,11 +1,11 @@
 {
-  "name": "mediainspector2",
+  "name": "mediainspector-pro",
   "version": "2.0.0",
-  "description": "MediaInspector2 - media inspection player, Electron shell over mpv",
+  "description": "MediaInspector_Pro - media inspection player, Electron shell over mpv",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-packager . MediaInspector2 --platform=win32 --arch=x64 --out=../dist --icon=../app.ico --overwrite --prune=true --extra-resource=../config --app-version=2.0.0 --win32metadata.FileDescription=\"MediaInspector2\" --win32metadata.ProductName=\"MediaInspector2\""
+    "build": "electron-packager . MediaInspector_Pro --platform=win32 --arch=x64 --out=../dist --icon=../app.ico --overwrite --prune=true --extra-resource=../config --app-version=2.0.0 --win32metadata.FileDescription=\"MediaInspector_Pro\" --win32metadata.ProductName=\"MediaInspector_Pro\""
   },
   "license": "MIT",
   "devDependencies": {

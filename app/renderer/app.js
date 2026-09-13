@@ -1,5 +1,5 @@
 'use strict';
-// MediaInspector2 control panel.
+// MediaInspector_Pro control panel.
 //
 // Everything here is a view of the player's state: the panel sends commands
 // and reflects what mpv pushes back. It never keeps a second copy of playback

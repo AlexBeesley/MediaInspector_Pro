@@ -3,8 +3,7 @@
 # audio files.
 #
 # Explorer's "Open with" / default-app system only accepts a real .exe - a
-# .bat or .ps1 never appears in the app picker. MediaInspector_Pro.exe is
-# that real .exe (see Build.ps1), so this simply points Explorer at it.
+# .bat or .ps1 never appears in the app picker. The packaged build in dist# is that real .exe, so this simply points Explorer at it.
 #
 # All keys are under HKCU - no admin, affects only this user.
 # Run with -Remove to undo.
@@ -14,7 +13,7 @@ param([switch]$Remove)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Exe = Join-Path $Root "MediaInspector_Pro.exe"
+$Exe = Join-Path $Root "dist\MediaInspector_Pro-win32-x64\MediaInspector_Pro.exe"
 $AppName = "MediaInspector_Pro.exe"
 $Classes = "HKCU:\Software\Classes"
 
@@ -70,19 +69,21 @@ if ($Remove) {
 }
 
 # ---------- The app itself ----------
-# MediaInspector_Pro.exe is now a real application built by Build.ps1, not a
-# shim around a .ps1 - so this registers the existing binary rather than
-# generating one. It must never rebuild it here: doing so would overwrite
-# the app with a stub.
+# This registers the packaged binary and must never build it here. Note that
+# the path is baked into the registry, so re-run this script after moving the
+# project folder or the right-click verb points at nothing.
 if (-not (Test-Path $Exe)) {
-    throw "MediaInspector_Pro.exe not found. Build it first:  .\Build.ps1"
+    throw "Packaged build not found at $Exe - build it first:  cd app; npm run build"
 }
 Write-Host "Registering $Exe"
 
-$icon = "C:\Program Files\MPV Player\mpv.exe,0"
-if (-not (Test-Path "C:\Program Files\MPV Player\mpv.exe")) {
+# The exe carries app.ico, so it is its own icon; mpv's is only a fallback for
+# a build that predates the icon.
+$icon = "$Exe,0"
+if (-not (Test-Path (Join-Path $Root "app.ico"))) {
+    $icon = "C:\Program Files\MPV Player\mpv.exe,0"
     $f = (Get-Command mpv -ErrorAction SilentlyContinue).Source
-    if ($f) { $icon = "$f,0" }
+    if ($f -and -not (Test-Path "C:\Program Files\MPV Player\mpv.exe")) { $icon = "$f,0" }
 }
 $cmd = "`"$Exe`" `"%1`""
 

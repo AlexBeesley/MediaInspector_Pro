@@ -10,82 +10,50 @@ keybindings and Lua UI — so it gets real GPU decode, frame-exact stepping,
 native ProRes/HEVC support and lossless full-resolution export without
 reinventing a media pipeline.
 
-## Two shells, one player
+## Running it
 
-There are two front ends over the same player, and they are interchangeable:
-both start mpv with the same `config/`, the same Lua UI and the same IPC pipe,
-so the picture, the on-video bar, the key bindings and the export paths behave
-identically in either.
+Run **MediaInspector_Pro.bat**, or drag any media file onto it. It starts the
+packaged build if there is one and falls back to running from source, so it
+launches either way.
 
-| | MediaInspector2 (`app/`) | MediaInspector_Pro (`src/`) |
-|---|---|---|
-| Shell | Electron + HTML | WinForms + C# |
-| Control panel | reflows into as many card columns as it is given | fixed-width card grid |
-| Player state | pushed by mpv as it changes | polled twice a second |
-| Launch | `MediaInspector2.bat` | `MediaInspector_Pro.exe` |
-| The exe | `dist\MediaInspector2-win32-x64\MediaInspector2.exe`, after `npm run build` | `MediaInspector_Pro.exe`, after `Build.ps1` |
-| Needs | `npm install` in `app/` (Electron, koffi) | nothing - builds with the .NET Framework compiler |
+With no file given it **reopens the last file you had open**, in the **same
+window position** as last time, at the **UI scale you last set**. Opening a
+file while a window is already up reuses that window rather than starting a
+second player - both would otherwise fight over the same IPC pipe, whose name
+is fixed, so one instance runs at a time.
 
-MediaInspector2 is the one being developed; the WinForms shell stays until it
-has been lived with for a while. Run one at a time - the IPC socket name is
-fixed, so two shells would fight over the same pipe.
+Run **Register-FileTypes.bat** once to get "Open with MediaInspector_Pro" in
+Explorer's right-click menu for every supported extension. It writes the exe's
+path into the registry, so re-run it after moving the project folder.
 
-### MediaInspector2
+## Building
 
 ```
 cd app
 npm install          # once: Electron, plus koffi for the few Win32 calls
 npm start            # run from source
-npm run build        # package it: dist\MediaInspector2-win32-x64\MediaInspector2.exe
+npm run build        # package it: dist\MediaInspector_Pro-win32-x64\MediaInspector_Pro.exe
 ```
 
-`MediaInspector2.bat` runs the packaged exe if one has been built and falls back
-to running from source, so it launches either way. Packaging bundles Chromium
-and Node, so the output folder is ~300MB against the WinForms shell's 66KB exe -
-that is the price of the UI toolkit, not of this app. `dist/` is git-ignored.
+Packaging bundles Chromium and Node, so the output folder is ~300MB - the price
+of the UI toolkit, not of this app. `dist/` is git-ignored.
 
 The exe finds the project by walking up from wherever it sits, which is how it
 locates `config/`, `Exports/` and the player's state file; a copy of `config/`
 ships inside the package as a fallback for a folder that has been moved
 somewhere else, and `MI_ROOT` overrides both.
 
-Both shells build with `app.ico`, drawn by `tools\make-icon.py` from the same
-palette as everything else - the crop brackets around a play triangle, with the
-brackets dropped below 48px where they stop reading. Regenerate it and rebuild
-to change it; neither build embeds an icon that is not there, which is why they
-carried Windows' default for so long.
+The icon is `app.ico`, drawn by `tools\make-icon.py` from the same palette as
+everything else - the crop brackets around a play triangle, with the brackets
+dropped below 48px where they stop reading. Regenerate it and rebuild to change
+it.
 
 The picture is a native child window that mpv paints into, positioned over the
 page, which is why the panel lays out *around* it rather than over it. Node
-talks to mpv over the same JSON IPC pipe, but keeps the connection open and
-subscribes to property changes, so the panel is a listener rather than a
-poller. `--shot=<file>.png` renders the panel, writes a PNG of it and exits -
-the successor to `--dump-layout`, for checking the panel's own layout without a
-screen grab.
-
-### MediaInspector_Pro
-
-Run **MediaInspector_Pro.exe**, or drag any media file onto it. If the exe
-isn't built yet, **MediaInspector_Pro.bat** builds it and then starts it.
-
-With no file given it **reopens the last file you had open**, in the **same
-window position** as last time, at the **UI scale you last set**. Opening a
-file while a window is already up reuses that window rather than starting a
-second player — both would otherwise fight over the same IPC pipe.
-
-Run **Register-FileTypes.bat** once to get "Open with MediaInspector_Pro" in
-Explorer's right-click menu for every supported extension.
-
-## Building
-
-```
-.\Build.ps1          # -Run to launch it afterwards
-```
-
-Compiles `src\*.cs` with the C# compiler that ships with the .NET Framework,
-so there is no SDK, no NuGet and no toolchain to install. Output is a single
-~65KB WinExe. Drop an `app.ico` beside `Build.ps1` and it is used as the
-icon automatically.
+talks to mpv over the JSON IPC pipe and keeps the connection open, subscribing
+to property changes, so the panel is a listener rather than a poller.
+`--shot=<file>.png` renders the panel, writes a PNG of it and exits, for
+checking the panel's own layout without a screen grab.
 
 ## One window
 
@@ -354,8 +322,7 @@ Every control is a card in the grid beside the picture: transport, media
 navigation, zoom and rotation, display/audio/tools, the colour sliders, GPU
 upscaling, crop, trim, export settings and the shortcut list.
 
-Both shells apply the same rule for the divide between the cards and the
-picture, and MediaInspector2 additionally subtracts the space the player
+The divide between the cards and the picture subtracts the space the player
 reserves for its own bar, so the fit is exact rather than close.
 
 The shape they fit is the shape **on screen**, which is not what mpv's size
@@ -377,12 +344,8 @@ until the next resize or file.
 They drive the player over mpv's JSON IPC socket — real player commands, not
 simulated keypresses. The grid mirrors the media-kind accent colour, dims
 buttons that don't apply to the open file rather than hiding them, and
-remembers every setting between runs in `state_panel.ini`. Messages that
+remembers every setting between runs in `state_panel.json`. Messages that
 would pop up over the picture go to the **Activity log** along the bottom.
-
-`--dump-layout` builds the window, writes the real geometry of every card to
-`state_layout.txt` and exits — layout faults are invisible in code review and
-obvious in numbers.
 
 Note: the IPC socket name is fixed, so one instance runs at a time — fine for
 normal use, not for two files open side by side.
@@ -422,17 +385,16 @@ for it. Everything after decode (scaling, colour, output) is GPU regardless.
 
 ```
 MediaInspector_Pro/
-├── MediaInspector_Pro.exe   the app (built by Build.ps1)
-├── MediaInspector_Pro.bat   builds it if missing, then runs it
-├── Build.ps1                compiles src\*.cs -> the exe
+├── MediaInspector_Pro.bat   runs the packaged build, or the source
 ├── Register-FileTypes.bat   adds the Explorer right-click verb
-├── src/                     C# sources
-│   ├── Program.cs           entry point, single instance, --dump-layout
-│   ├── MainForm.cs          window, embedding, status, fit-to-frame
-│   ├── Cards.cs             the control grid
-│   ├── Ipc.cs               mpv JSON IPC over a named pipe
-│   ├── Player.cs            mpv process + --wid embedding
-│   └── Controls.cs          custom dark-theme controls
+├── app/                     the shell
+│   ├── main.js              window, embedding, IPC wiring, --shot
+│   ├── player.js            mpv process + --wid embedding
+│   ├── mpv-ipc.js           mpv JSON IPC over a named pipe
+│   ├── native.js            the few Win32 calls embedding needs
+│   ├── state.js             saved panel state
+│   └── renderer/            the control panel (HTML/CSS/JS)
+├── dist/                    the packaged exe (npm run build)
 ├── Exports/                 exported frames and clips land here
 ├── state_*                  saved session state (auto-generated)
 └── config/

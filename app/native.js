@@ -2,8 +2,8 @@
 // The few Win32 calls that embedding mpv needs. mpv draws into a window we
 // give it (--wid) but does not resize itself to follow that window, and it
 // creates its child disabled on the assumption the host owns all input - so
-// the host has to move it and re-enable it. Ported straight from the
-// WinForms shell's Player.cs, where all of this was learned the hard way.
+// the host has to move it and re-enable it. Both were learned the hard way;
+// neither is documented anywhere obvious.
 
 const koffi = require('koffi');
 

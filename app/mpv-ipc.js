@@ -2,11 +2,11 @@
 // mpv's JSON IPC over a Windows named pipe: real player commands, not
 // simulated keypresses.
 //
-// The WinForms shell polled a dozen properties every 500ms because a
-// synchronous request/reply was all it had. Here the connection stays open and
-// mpv pushes property changes as they happen, so the UI is a listener rather
-// than a poller - that, more than anything else, is what makes this shell feel
-// immediate.
+// The connection stays open and mpv pushes property changes as they happen, so
+// the UI is a listener rather than a poller. A synchronous request/reply per
+// property means polling a dozen of them a couple of times a second, which is
+// both slower and visibly behind the player; this is what makes the panel feel
+// attached to the picture rather than reporting on it.
 
 const net = require('net');
 const { EventEmitter } = require('events');

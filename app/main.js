@@ -1,11 +1,10 @@
 'use strict';
-// MediaInspector2 - the shell around the player.
+// MediaInspector_Pro - the shell around the player.
 //
-// Playback is unchanged from the WinForms version and deliberately so: mpv,
+// The shell owns everything around the picture; the picture itself is mpv,
 // driven by config/ and config/scripts/mediainspector.lua, drawing into a
-// window this process hands it. What is new is everything around the picture -
-// an HTML control panel that reflows instead of a fixed card grid, and a push
-// connection to the player instead of a twice-a-second poll.
+// window this process hands it. The panel reflows to the space it is given
+// and listens on a push connection to the player rather than polling it.
 
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Menu } = require('electron');
 const path = require('path');
@@ -21,9 +20,8 @@ const native = require('./native');
 const { Player, findMpv, PIPE_NAME } = require('./player');
 const { State, lastFileFrom } = require('./state');
 
-// Where the project lives: config/, Exports/ and the player's own state file,
-// all shared with the WinForms shell. In development that is the parent of
-// app/. Packaged, the exe sits in dist/MediaInspector2-win32-x64/, so the
+// Where the project lives: config/, Exports/ and the player's own state file.
+// In development that is the parent of app/. Packaged, the exe sits in dist/MediaInspector_Pro-win32-x64/, so the
 // project is found by walking up from the exe instead - and a copy of config/
 // ships inside the package as the last resort, which is what lets a folder
 // that has been moved elsewhere still run.
@@ -58,7 +56,7 @@ const CONFIG_DIR = path.join(ROOT, 'config');
 const SHADER_DIR = path.join(CONFIG_DIR, 'shaders');
 const EXPORT_DIR = path.join(ROOT, 'Exports');
 
-const state = new State(path.join(ROOT, 'state_panel2.json'));
+const state = new State(path.join(ROOT, 'state_panel.json'));
 const ipc = new MpvIpc(PIPE_NAME);
 const player = new Player(CONFIG_DIR);
 
@@ -97,7 +95,7 @@ function createWindows() {
     minWidth: 900,
     minHeight: 560,
     backgroundColor: '#12121a',
-    title: 'MediaInspector2',
+    title: 'MediaInspector_Pro',
     icon: hasIcon() ? path.join(ROOT, 'app.ico') : undefined,
     show: false,
     webPreferences: {
@@ -200,7 +198,7 @@ function positionVideo() {
 
 // --shot=<file> renders the panel, saves a PNG of it and exits. The picture is
 // a native window of its own and does not appear in it: this checks the panel's
-// own layout, the way --dump-layout did for the WinForms card grid.
+// own layout, which is invisible in code review and obvious in a picture.
 function maybeShot() {
   const arg = process.argv.find((a) => a.startsWith('--shot='));
   if (!arg) return;
@@ -250,7 +248,7 @@ function startPlayer() {
   if (!player.start(videoHwnd, startFile())) {
     dialog.showMessageBox(win, {
       type: 'error',
-      title: 'MediaInspector2',
+      title: 'MediaInspector_Pro',
       message: 'mpv.exe not found.',
       detail: 'Install it with:\n\nwinget install --id shinchiro.mpv -e',
     }).then(() => app.quit());
@@ -373,10 +371,10 @@ function pushUpscale() {
 const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
 const fmt = (v) => String(Math.round(v * 1000) / 1000);
 
-// The colour controls are one lavfi graph plus mpv's own four. Ported from the
-// WinForms panel, including the reason the whole graph is wrapped in lavfi[]:
-// passing the filters bare lets mpv's vf parser eat the ':' separators, and one
-// rejected stage silently kills every adjustment.
+// The colour controls are one lavfi graph plus mpv's own four. The whole graph
+// is wrapped in lavfi[] for a reason: passing the filters bare lets mpv's vf
+// parser eat the ':' separators, and one rejected stage silently kills every
+// adjustment.
 function applyLook(look) {
   if (!ipc.connected) return;
   const a = (k) => num(look[k]);
