@@ -26,7 +26,9 @@ public partial class MainForm {
     private CheckedListBox _shaderList;
     private readonly Dictionary<string, string> _shaderPaths = new Dictionary<string, string>();
     private ComboBox _upMode, _upFactor, _scaleSel, _dscaleSel, _apiSel, _expFmt, _expScaler;
-    private Win11Toggle _rtxHdr, _fitToggle;
+    private Win11Toggle _rtxHdr, _fitToggle, _videoOnly;
+    private bool _syncingScope;
+    private string _cropShown = "";
     private TextBox _expDir, _expScale, _cropW, _cropH, _cropX, _cropY, _trimIn, _trimOut;
     private readonly List<Win11Button> _timeBtns = new List<Win11Button>();
     private readonly List<Win11Button> _imageBtns = new List<Win11Button>();
@@ -221,6 +223,12 @@ public partial class MainForm {
         Bind(c, "« Previous", W1, false, "prev_media");
         Bind(c, "Next »", W1, false, "next_media");
         Btn(c, "Open Exports", W1, delegate { OpenExports(); }, true);
+        Txt(c, "Browse videos only", 190);
+        _videoOnly = Tog(c, true, delegate {
+            if (_syncingScope) return;
+            _ipc.SetSetting("browse_all", _videoOnly.Checked ? "no" : "yes");
+        }, true);
+        Txt(c, "Off also steps through photos and audio in the folder.", W3, true, true);
 
         // --- image ---
         c = Card("Image Inspection & Zoom");
@@ -349,8 +357,17 @@ public partial class MainForm {
         Txt(c, "Shaders apply everywhere. RTX needs hardware-decoded video on D3D11.", W3, true, true);
     }
 
+    // Every control here goes through the player's script messages rather
+    // than setting the filter itself: the player owns one crop rectangle, and
+    // the box you drag on the picture and these numbers have to be that same
+    // rectangle or the two quietly disagree about what is cropped.
     private void BuildCropCard() {
         var c = Card("Crop Aspect Ratio");
+        Btn(c, "Adjust on the Picture  (c)", W3, delegate {
+            Cmd("script-message", "mi-crop-edit");
+        }, true, false, true);
+        Txt(c, "Drag the box or its handles over the video. Enter applies, Esc cancels.", W3, true, true);
+
         string[] ratios = { "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "5:4", "4:5", "21:9" };
         for (int i = 0; i < ratios.Length; i++) {
             string r = ratios[i];
@@ -362,11 +379,13 @@ public partial class MainForm {
         Txt(c, "Y", 18); _cropY = Box(c, "0", 60, true);
         Btn(c, "Apply Crop", W1, delegate {
             if (_cropW.Text.Length > 0 && _cropH.Text.Length > 0) {
-                Cmd("vf", "set", "@microp:crop=" + _cropW.Text + ":" + _cropH.Text + ":" + _cropX.Text + ":" + _cropY.Text);
+                Cmd("script-message", "mi-crop-rect", _cropW.Text, _cropH.Text,
+                    _cropX.Text.Length > 0 ? _cropX.Text : "0",
+                    _cropY.Text.Length > 0 ? _cropY.Text : "0");
                 Log("Crop " + _cropW.Text + "x" + _cropH.Text);
             }
         });
-        Btn(c, "Clear Crop", W1, delegate { Cmd("vf", "remove", "@microp"); Log("Crop cleared"); });
+        Btn(c, "Clear Crop", W1, delegate { Cmd("script-message", "mi-crop-clear"); Log("Crop cleared"); });
         Btn(c, "Fill from Media", W1, delegate {
             double? w = _ipc.GetNumber("width"); double? h = _ipc.GetNumber("height");
             if (w.HasValue && h.HasValue) {
@@ -439,6 +458,8 @@ public partial class MainForm {
             { "Ctrl+H", "Toggle HDR" },
             { "9 / 0, m, a", "Volume, mute, track" },
             { "Space", "Play / pause" },
+            { "b", "Browse videos only / all media" },
+            { "c", "Adjust the crop on the picture" },
             { "Wheel", "Shuttle (video) / zoom (photo)" },
             { "Ctrl+Wheel, drag", "Zoom / pan" }
         };
@@ -485,21 +506,28 @@ public partial class MainForm {
         System.Diagnostics.Process.Start("explorer.exe", dir);
     }
 
+    // The player sizes the ratio window against the decoded frame and hands
+    // the numbers back through user-data, so the boxes fill themselves in.
     private void ApplyAspectCrop(string ratio) {
-        double? w = _ipc.GetNumber("width"), h = _ipc.GetNumber("height");
-        if (!w.HasValue || !h.HasValue) return;
         string[] parts = ratio.Split(':');
-        double rw = double.Parse(parts[0], CultureInfo.InvariantCulture);
-        double rh = double.Parse(parts[1], CultureInfo.InvariantCulture);
-        double target = rw / rh, src = w.Value / h.Value;
-        int cw, ch;
-        if (src > target) { ch = (int)h.Value; cw = (int)Math.Round(h.Value * target); }
-        else { cw = (int)w.Value; ch = (int)Math.Round(w.Value / target); }
-        int cx = ((int)w.Value - cw) / 2, cy = ((int)h.Value - ch) / 2;
-        _cropW.Text = cw.ToString(); _cropH.Text = ch.ToString();
-        _cropX.Text = cx.ToString(); _cropY.Text = cy.ToString();
-        Cmd("vf", "set", "@microp:crop=" + cw + ":" + ch + ":" + cx + ":" + cy);
-        Log("Crop " + ratio + " -> " + cw + "x" + ch);
+        Cmd("script-message", "mi-crop-aspect", parts[0], parts[1], ratio);
+        Log("Crop " + ratio);
+    }
+
+    // Mirror the player's crop rectangle into the boxes - including while it
+    // is being dragged on the picture - but never while one is being typed in.
+    private void SyncCropBoxes() {
+        if (_cropW == null) return;
+        if (_cropW.Focused || _cropH.Focused || _cropX.Focused || _cropY.Focused) return;
+        string v = _ipc.GetString("user-data/mi/crop") ?? "";
+        if (v == _cropShown) return;
+        _cropShown = v;
+        string[] p = v.Split(':');
+        if (p.Length == 4) {
+            _cropW.Text = p[0]; _cropH.Text = p[1]; _cropX.Text = p[2]; _cropY.Text = p[3];
+        } else {
+            _cropW.Text = ""; _cropH.Text = ""; _cropX.Text = "0"; _cropY.Text = "0";
+        }
     }
 
     private void ExportTrim() {
@@ -669,6 +697,19 @@ public partial class MainForm {
             if (r != null && r.IndexOf("\"error\":\"success\"", StringComparison.Ordinal) < 0)
                 Log("Filter rejected: " + string.Join(",", f.ToArray()));
         }
+    }
+
+    // The player owns the browse scope: it persists it with the rest of the
+    // session state, and its own bar button and the b key change it too, so
+    // this toggle follows the player rather than the other way round.
+    private void SyncBrowseScope() {
+        if (_videoOnly == null) return;
+        string v = _ipc.GetString("user-data/mi/set_browse_all");
+        if (string.IsNullOrEmpty(v)) return;
+        bool videoOnly = v != "yes";
+        if (_videoOnly.Checked == videoOnly) return;
+        _syncingScope = true;
+        try { _videoOnly.Checked = videoOnly; } finally { _syncingScope = false; }
     }
 
     private void ApplyKindEnablement(string kind) {

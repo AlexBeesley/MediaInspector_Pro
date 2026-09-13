@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -62,6 +62,8 @@ public partial class MainForm : Win11Form {
     private string _kindNow = "";
     private string _lastPath = "";
     private bool _fittedForCurrent;
+    private int _mediaW, _mediaH;
+    private bool _syncingSplit;
 
     private readonly List<Label> _sectionLabels = new List<Label>();
     private readonly List<Win11Button> _buttons = new List<Win11Button>();
@@ -90,7 +92,7 @@ public partial class MainForm : Win11Form {
         DragDrop += OnDragDrop;
         Shown += OnShown;
         FormClosing += OnClosing;
-        Resize += delegate { SyncVideoChild(); };
+        Resize += delegate { SyncSplitForMedia(); SyncVideoChild(); };
     }
 
     // ---------------- chrome ----------------
@@ -242,6 +244,10 @@ public partial class MainForm : Win11Form {
             PushAllSettings();
             _pushedSettings = true;
             RequestLook();
+            // The picture is live now, so give it the keyboard: the player's
+            // own bindings are the ones a viewer reaches for first, and the
+            // control cards take focus back the moment one is clicked.
+            _player.FocusVideo(_videoHost.Handle);
         }
 
         string tier = _ipc.GetString("user-data/mi/tier");
@@ -256,6 +262,9 @@ public partial class MainForm : Win11Form {
             ApplyKindEnablement(kind);
         }
 
+        SyncBrowseScope();
+        SyncCropBoxes();
+
         string path = _ipc.GetString("path");
         if (!string.IsNullOrEmpty(path) && path != _lastPath) {
             _lastPath = path;
@@ -269,8 +278,20 @@ public partial class MainForm : Win11Form {
 
     private void UpdateStatus(bool paused) {
         string name = _ipc.GetString("filename");
-        double? w = _ipc.GetNumber("width");
-        double? h = _ipc.GetNumber("height");
+        int dw, dh;
+        if (DisplayShape(out dw, out dh)) {
+            int nw = dw, nh = dh;
+            if (nw != _mediaW || nh != _mediaH) {
+                _mediaW = nw;
+                _mediaH = nh;
+                // The shape changed - another file, a rotation, or a crop
+                // applied or cleared - so the divide between the cards and the
+                // picture is stale.
+                SyncSplitForMedia();
+            }
+        }
+        double? w = _mediaW > 0 ? (double?)_mediaW : null;
+        double? h = _mediaH > 0 ? (double?)_mediaH : null;
         string gamma = _ipc.GetString("video-params/gamma");
         string hint = _ipc.GetString("target-colorspace-hint");
         bool hdrLive = (gamma == "pq" || gamma == "hlg") && hint != "no";
@@ -323,17 +344,66 @@ public partial class MainForm : Win11Form {
         Invalidate(true);
     }
 
+    // The picture's shape as displayed. Neither the decoded size nor mpv's
+    // reported one will do: a crop makes dwidth/dheight differ from
+    // width/height, and a phone shoots 3840x2160 with a rotate-90 flag that
+    // every one of mpv's size properties reports unrotated - which is why
+    // portrait clips were being laid out as landscape.
+    private bool DisplayShape(out int w, out int h) {
+        w = 0; h = 0;
+        double? dw = _ipc.GetNumber("dwidth") ?? _ipc.GetNumber("width");
+        double? dh = _ipc.GetNumber("dheight") ?? _ipc.GetNumber("height");
+        if (!dw.HasValue || !dh.HasValue || dw.Value < 1 || dh.Value < 1) return false;
+
+        double container = _ipc.GetNumber("video-params/rotate") ?? 0;
+        double user = _ipc.GetNumber("video-rotate") ?? 0;
+        bool quarter = (((int)(container + user) % 180) + 180) % 180 == 90;
+        w = (int)(quarter ? dh.Value : dw.Value);
+        h = (int)(quarter ? dw.Value : dh.Value);
+        return true;
+    }
+
+    // Give the picture the shape it actually wants and hand whatever is left
+    // over to the cards. A portrait clip in a landscape window would otherwise
+    // sit in a wide letterbox with a one-column menu beside it; widening the
+    // menu instead lets the video fill its side and buys a second card column.
+    // Clamped both ways: never below one card column, never below the picture's
+    // own minimum. Dragging the splitter still wins until the window is resized
+    // or another file is loaded.
+    private void SyncSplitForMedia() {
+        if (_split == null || _syncingSplit) return;
+        if (_mediaW < 1 || _mediaH < 1) return;
+
+        int total = _split.ClientSize.Width - _split.SplitterWidth;
+        int paneH = _split.ClientSize.Height;
+        if (total < 10 || paneH < 10) return;
+
+        int wantVideo = (int)Math.Round(paneH * (double)_mediaW / _mediaH);
+        int min = CardW + 34;
+        int max = total - _split.Panel2MinSize;
+        if (max < min) return;
+
+        int left = Math.Max(min, Math.Min(total - wantVideo, max));
+        if (Math.Abs(_split.SplitterDistance - left) < 2) return;
+
+        _syncingSplit = true;
+        try { _split.SplitterDistance = left; } catch { } finally { _syncingSplit = false; }
+        SyncVideoChild();
+    }
+
     // Fit the WINDOW so the video area lands at the media's own size - the
     // same behaviour the standalone player had, but done here because mpv is
     // now a child window and cannot resize the frame around it.
     private void FitWindowToMedia() {
         if (!_fitWindow) { _fittedForCurrent = true; return; }
         if (WindowState != FormWindowState.Normal) return;
-        double? w = _ipc.GetNumber("width");
-        double? h = _ipc.GetNumber("height");
-        if (!w.HasValue || !h.HasValue || w.Value < 1 || h.Value < 1) return;
+        int dw, dh;
+        if (!DisplayShape(out dw, out dh)) return;
+        double? w = dw, h = dh;
 
         _fittedForCurrent = true;
+        _mediaW = dw;
+        _mediaH = dh;
 
         Rectangle wa = Screen.FromControl(this).WorkingArea;
         int chromeW = Width - _videoHost.ClientSize.Width;
