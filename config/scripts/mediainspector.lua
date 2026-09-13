@@ -214,7 +214,11 @@ local UI_SCALE_STEP = 1.15
 local UI_SCALE_DEFAULT = 1.0 / (UI_SCALE_STEP ^ 5)
 
 local ui_scale = UI_SCALE_DEFAULT
-local ui = { buttons = {}, seekbar = nil, subbar = nil, osd_w = 0, osd_h = 0 }
+local ui = { buttons = {}, seekbar = nil, speedbar = nil, zoombar = nil, osd_w = 0, osd_h = 0 }
+
+-- Declared here rather than beside its definition: the crop editor and the
+-- browse scope both live above the drawing code and have to ask for a redraw.
+local render
 
 -- Scale is driven by window HEIGHT, not width: a portrait clip fills a tall
 -- narrow window, where width-based scaling would shrink the UI to nothing
@@ -558,13 +562,32 @@ end
 
 local CROP_LABEL = "microp"
 
+-- `on` is a crop the filter is actually applying; `editing` is the adjust
+-- mode, where the filter is off so the whole frame can be seen and the same
+-- w/h/x/y are a box being dragged over it. `saved` is what to put back if
+-- that adjustment is cancelled.
 local crop = {
     on = false,
+    editing = false,
+    saved = nil,
     label = "",
     rw = 0, rh = 0,
     src_w = 0, src_h = 0,
     w = 0, h = 0, x = 0, y = 0,
     last_vf = 0,
+}
+
+-- The adjust mode hangs off one table rather than a dozen top-level locals:
+-- Lua's main chunk allows only 200 of those and this script is near the line.
+-- MIN is in source pixels - a box smaller than that is a slip of the hand.
+local cropui = {
+    MIN = 16,
+    RATIOS = {
+        { 0, 0, "" }, { 1, 1, "1:1" }, { 4, 3, "4:3" }, { 16, 9, "16:9" },
+        { 9, 16, "9:16" }, { 3, 2, "3:2" }, { 2, 3, "2:3" }, { 21, 9, "21:9" },
+    },
+    HANDLES = { "nw", "n", "ne", "e", "se", "s", "sw", "w" },
+    drag = nil,
 }
 
 local function even_px(n)
@@ -609,6 +632,43 @@ local function crop_size_for_ratio(sw, sh, rw, rh)
     return cw, ch
 end
 
+-- The rectangle the picture occupies inside the OSD. mpv's margins already
+-- account for the letterboxing, the space reserved for the bar and any zoom,
+-- so this is the only thing that has to know how a source pixel reaches the
+-- screen. Rotation is not handled: it would swap the axes under the box.
+function cropui.video_rect()
+    local d = mp.get_property_native("osd-dimensions")
+    if not d or not d.w or not d.h then return nil end
+    local x0, y0 = d.ml or 0, d.mt or 0
+    local x1, y1 = d.w - (d.mr or 0), d.h - (d.mb or 0)
+    if x1 - x0 < 8 or y1 - y0 < 8 then return nil end
+    return x0, y0, x1, y1
+end
+
+-- While the crop is being adjusted the filter is off, so what is on screen is
+-- the whole source frame and these two are a straight proportion.
+function cropui.to_osd(px, py)
+    local x0, y0, x1, y1 = cropui.video_rect()
+    if not x0 or crop.src_w < 1 or crop.src_h < 1 then return nil end
+    return x0 + (px / crop.src_w) * (x1 - x0), y0 + (py / crop.src_h) * (y1 - y0)
+end
+
+function cropui.to_src(ox, oy)
+    local x0, y0, x1, y1 = cropui.video_rect()
+    if not x0 or crop.src_w < 1 or crop.src_h < 1 then return nil end
+    return (ox - x0) / (x1 - x0) * crop.src_w, (oy - y0) / (y1 - y0) * crop.src_h
+end
+
+-- Keep the box inside the frame and big enough to grab. No rounding to even
+-- pixels here: that only matters at the point the filter is handed the numbers,
+-- and rounding every drag step would make the box crawl.
+function cropui.clamp()
+    crop.w = math.max(cropui.MIN, math.min(crop.w, crop.src_w))
+    crop.h = math.max(cropui.MIN, math.min(crop.h, crop.src_h))
+    crop.x = math.max(0, math.min(crop.x, crop.src_w - crop.w))
+    crop.y = math.max(0, math.min(crop.y, crop.src_h - crop.h))
+end
+
 local function clamp_crop_origin()
     local max_x = math.max(0, crop.src_w - crop.w)
     local max_y = math.max(0, crop.src_h - crop.h)
@@ -619,14 +679,16 @@ local function clamp_crop_origin()
 end
 
 local function publish_crop()
-    if crop.on then
+    if crop.on or crop.editing then
         mp.set_property("user-data/mi/crop",
-            string.format("%d:%d:%d:%d", crop.w, crop.h, crop.x, crop.y))
+            string.format("%d:%d:%d:%d", even_px(crop.w), even_px(crop.h),
+                even_px(crop.x), even_px(crop.y)))
         mp.set_property("user-data/mi/crop_ratio", crop.label)
     else
         mp.set_property("user-data/mi/crop", "")
         mp.set_property("user-data/mi/crop_ratio", "")
     end
+    mp.set_property_bool("user-data/mi/crop_editing", crop.editing)
 end
 
 local function apply_crop_vf(refit)
@@ -675,6 +737,18 @@ end
 local function set_crop_aspect(rw, rh, label)
     rw, rh = tonumber(rw), tonumber(rh)
     if not rw or not rh or rw <= 0 or rh <= 0 then return end
+
+    -- A ratio chosen while the box is open reshapes the box; it does not
+    -- apply the crop behind the mode the user is still standing in.
+    if crop.editing then
+        crop.rw, crop.rh = rw, rh
+        crop.label = label or string.format("%d:%d", rw, rh)
+        cropui.shape_to_ratio()
+        publish_crop()
+        emit("Crop locked to " .. crop.label, 1.5)
+        render()
+        return
+    end
     local sw, sh
     if crop.src_w >= 2 and crop.src_h >= 2 then
         sw, sh = crop.src_w, crop.src_h
@@ -697,19 +771,242 @@ local function set_crop_aspect(rw, rh, label)
         crop.label, crop.w, crop.h), 2)
 end
 
+-- ---- adjust mode ----
+
+-- Reshape the box to the locked ratio around its own centre, keeping as much
+-- of its current size as the frame allows.
+function cropui.shape_to_ratio()
+    if crop.rw <= 0 or crop.rh <= 0 then return end
+    local ar = crop.rw / crop.rh
+    local cx, cy = crop.x + crop.w / 2, crop.y + crop.h / 2
+    local w, h = crop.w, crop.w / ar
+    if h > crop.src_h then h = crop.src_h; w = h * ar end
+    if w > crop.src_w then w = crop.src_w; h = w / ar end
+    crop.w, crop.h = w, h
+    crop.x, crop.y = cx - w / 2, cy - h / 2
+    cropui.clamp()
+end
+
+function cropui.start()
+    if crop.editing then return end
+    local sw, sh = decoder_size()
+    if sw < 2 or sh < 2 then emit("No video size to crop yet", 2) return end
+    crop.src_w, crop.src_h = sw, sh
+
+    if crop.on and crop.w >= cropui.MIN and crop.h >= cropui.MIN then
+        crop.saved = { on = true, label = crop.label, rw = crop.rw, rh = crop.rh,
+                       w = crop.w, h = crop.h, x = crop.x, y = crop.y }
+    else
+        crop.saved = { on = false }
+        -- Nothing cropped yet: start inset from the frame rather than filling
+        -- it, so every handle is on screen and grabbable straight away.
+        crop.w, crop.h = sw * 0.8, sh * 0.8
+        crop.x, crop.y = (sw - crop.w) / 2, (sh - crop.h) / 2
+    end
+
+    -- The filter comes off for the duration: you frame against the whole
+    -- picture, and it goes back on at Apply.
+    if filter_present(CROP_LABEL) then
+        mp.commandv("vf", "remove", "@" .. CROP_LABEL)
+    end
+    crop.on = false
+    crop.editing = true
+    cropui.clamp()
+    publish_crop()
+    emit("Crop: drag the box or its handles.  Enter applies, Esc cancels.", 3)
+    render()
+end
+
+function cropui.apply()
+    if not crop.editing then return end
+    crop.editing = false
+    crop.saved = nil
+    crop.w, crop.h = even_px(crop.w), even_px(crop.h)
+    crop.x, crop.y = even_px(crop.x), even_px(crop.y)
+
+    -- A box that is the whole frame is not a crop; treat it as clearing one.
+    if crop.w >= crop.src_w and crop.h >= crop.src_h then
+        clear_crop(false)
+        render()
+        return
+    end
+
+    crop.on = true
+    apply_crop_vf(true)
+    emit(string.format("Crop %s  %dx%d at %d,%d",
+        crop.label ~= "" and crop.label or "custom", crop.w, crop.h, crop.x, crop.y), 2)
+    render()
+end
+
+function cropui.cancel()
+    if not crop.editing then return end
+    crop.editing = false
+    local s = crop.saved
+    crop.saved = nil
+    if s and s.on then
+        crop.label, crop.rw, crop.rh = s.label, s.rw, s.rh
+        crop.w, crop.h, crop.x, crop.y = s.w, s.h, s.x, s.y
+        crop.on = true
+        apply_crop_vf(false)
+        emit("Crop left as it was", 1.5)
+    else
+        clear_crop(true)
+        emit("Crop cancelled", 1.5)
+    end
+    render()
+end
+
+function cropui.toggle()
+    if crop.editing then cropui.apply() else cropui.start() end
+end
+
+-- Back to the biggest box the frame (and the locked ratio) allows.
+function cropui.full()
+    if not crop.editing then return end
+    if crop.rw > 0 and crop.rh > 0 then
+        crop.w, crop.h = crop_size_for_ratio(crop.src_w, crop.src_h, crop.rw, crop.rh)
+    else
+        crop.w, crop.h = crop.src_w, crop.src_h
+    end
+    crop.x, crop.y = (crop.src_w - crop.w) / 2, (crop.src_h - crop.h) / 2
+    cropui.clamp()
+    publish_crop()
+    render()
+end
+
+function cropui.cycle_ratio()
+    if not crop.editing then return end
+    local i = 1
+    for n, r in ipairs(cropui.RATIOS) do
+        if r[1] == crop.rw and r[2] == crop.rh then i = n break end
+    end
+    local nxt = cropui.RATIOS[(i % #cropui.RATIOS) + 1]
+    crop.rw, crop.rh, crop.label = nxt[1], nxt[2], nxt[3]
+    cropui.shape_to_ratio()
+    publish_crop()
+    emit(crop.rw > 0 and ("Crop locked to " .. crop.label) or "Crop ratio free", 1.5)
+    render()
+end
+
+-- Handle centres, in source pixels.
+function cropui.handle_pos(id)
+    local l, t = crop.x, crop.y
+    local r, b = crop.x + crop.w, crop.y + crop.h
+    local mx, my = (l + r) / 2, (t + b) / 2
+    if id == "nw" then return l, t end
+    if id == "n"  then return mx, t end
+    if id == "ne" then return r, t end
+    if id == "e"  then return r, my end
+    if id == "se" then return r, b end
+    if id == "s"  then return mx, b end
+    if id == "sw" then return l, b end
+    return l, my
+end
+
+-- What the pointer is over: a handle name, "move" for the inside of the box,
+-- or nil for the picture around it.
+function cropui.hit(ox, oy)
+    if not crop.editing then return nil end
+    local tol = 11 * effective_scale()
+    for _, id in ipairs(cropui.HANDLES) do
+        local hx, hy = cropui.handle_pos(id)
+        local sx, sy = cropui.to_osd(hx, hy)
+        if sx and math.abs(ox - sx) <= tol and math.abs(oy - sy) <= tol then return id end
+    end
+    local x0, y0 = cropui.to_osd(crop.x, crop.y)
+    local x1, y1 = cropui.to_osd(crop.x + crop.w, crop.y + crop.h)
+    if x0 and ox >= x0 and ox <= x1 and oy >= y0 and oy <= y1 then return "move" end
+    return nil
+end
+
+function cropui.grab(mode, ox, oy)
+    local px, py = cropui.to_src(ox, oy)
+    if not px then return end
+    cropui.drag = { mode = mode, px = px, py = py,
+                       x = crop.x, y = crop.y, w = crop.w, h = crop.h }
+end
+
+-- Resizing anchors the side you are not holding: drag the west handle and the
+-- east edge stays where it is. With a ratio locked the other axis follows,
+-- centred on the axis the handle does not move along.
+function cropui.drag_to(ox, oy)
+    if not cropui.drag then return end
+    local px, py = cropui.to_src(ox, oy)
+    if not px then return end
+    local d = cropui.drag
+    local dx, dy = px - d.px, py - d.py
+
+    if d.mode == "move" then
+        crop.x, crop.y = d.x + dx, d.y + dy
+        cropui.clamp()
+    else
+        local m = d.mode
+        local l, t, r, b = d.x, d.y, d.x + d.w, d.y + d.h
+        if m:find("w") then l = math.min(d.x + dx, r - cropui.MIN) end
+        if m:find("e") then r = math.max(d.x + d.w + dx, l + cropui.MIN) end
+        if m:find("n") then t = math.min(d.y + dy, b - cropui.MIN) end
+        if m:find("s") then b = math.max(d.y + d.h + dy, t + cropui.MIN) end
+        l, t = math.max(0, l), math.max(0, t)
+        r, b = math.min(crop.src_w, r), math.min(crop.src_h, b)
+
+        if crop.rw > 0 and crop.rh > 0 then
+            local ar = crop.rw / crop.rh
+            local w, h = r - l, b - t
+            if m == "n" or m == "s" then w = h * ar else h = w / ar end
+            if w > crop.src_w then w = crop.src_w; h = w / ar end
+            if h > crop.src_h then h = crop.src_h; w = h * ar end
+            if m:find("w") then l = r - w
+            elseif m:find("e") then r = l + w
+            else l = (l + r) / 2 - w / 2; r = l + w end
+            if m:find("n") then t = b - h
+            elseif m:find("s") then b = t + h
+            else t = (t + b) / 2 - h / 2; b = t + h end
+            -- Re-anchoring can push the box off the frame; slide it back whole
+            -- rather than squashing it out of ratio.
+            if l < 0 then r = r - l; l = 0 end
+            if t < 0 then b = b - t; t = 0 end
+            if r > crop.src_w then l = l - (r - crop.src_w); r = crop.src_w end
+            if b > crop.src_h then t = t - (b - crop.src_h); b = crop.src_h end
+        end
+
+        crop.x, crop.y, crop.w, crop.h = l, t, r - l, b - t
+        cropui.clamp()
+    end
+    publish_crop()
+    render()
+end
+
+function cropui.release()
+    if not cropui.drag then return false end
+    cropui.drag = nil
+    publish_crop()
+    render()
+    return true
+end
+
 local function crop_center()
-    if not crop.on then return end
+    if not (crop.on or crop.editing) then return end
     crop.x = even_px((crop.src_w - crop.w) / 2)
     crop.y = even_px((crop.src_h - crop.h) / 2)
-    apply_crop_vf(false)
+    if crop.editing then
+        cropui.clamp(); publish_crop(); render()
+    else
+        apply_crop_vf(false)
+    end
     emit("Crop centered", 1.2)
 end
 
+-- Works on the box while it is being adjusted and on the applied crop
+-- otherwise, so Alt+Arrows mean the same thing either side of Apply.
 local function crop_nudge(dx, dy)
-    if not crop.on then return end
+    if not (crop.on or crop.editing) then return end
     crop.x = crop.x + dx
     crop.y = crop.y + dy
-    apply_crop_vf(false)
+    if crop.editing then
+        cropui.clamp(); publish_crop(); render()
+    else
+        apply_crop_vf(false)
+    end
 end
 
 -- Dragging the picture moves the *source* under a fixed window, so a
@@ -746,7 +1043,33 @@ end
 mp.register_script_message("mi-crop-aspect", function(rw, rh, label)
     set_crop_aspect(rw, rh, label)
 end)
-mp.register_script_message("mi-crop-clear", function() clear_crop(false) end)
+mp.register_script_message("mi-crop-clear", function()
+    crop.editing = false
+    crop.saved = nil
+    clear_crop(false)
+    render()
+end)
+mp.register_script_message("mi-crop-edit", function() cropui.toggle() end)
+
+-- Typed numbers from the panel land here, so a hand-entered rect is the same
+-- state the box and the ratio buttons drive - one crop, one owner.
+mp.register_script_message("mi-crop-rect", function(w, h, x, y)
+    local sw, sh = decoder_size()
+    if sw < 2 or sh < 2 then emit("No video size to crop yet", 2) return end
+    w, h = tonumber(w) or 0, tonumber(h) or 0
+    if w < cropui.MIN or h < cropui.MIN then emit("Crop size is too small", 2) return end
+    crop.editing = false
+    crop.saved = nil
+    crop.src_w, crop.src_h = sw, sh
+    crop.rw, crop.rh, crop.label = 0, 0, ""
+    crop.w, crop.h = w, h
+    crop.x, crop.y = tonumber(x) or 0, tonumber(y) or 0
+    cropui.clamp()
+    crop.w, crop.h = even_px(crop.w), even_px(crop.h)
+    crop.on = true
+    apply_crop_vf(true)
+    render()
+end)
 mp.register_script_message("mi-crop-center", function() crop_center() end)
 mp.register_script_message("mi-crop-nudge", function(dx, dy)
     crop_nudge(tonumber(dx) or 0, tonumber(dy) or 0)
@@ -794,7 +1117,9 @@ end
 -- reverse playback can hold a whole keyframe range) blows past what D3D11
 -- will allocate: the decoder fails with "Static surface pool size exceeded"
 -- and silently drops to software. Measured on a 4060 Ti.
-local HWDEC_DEFAULT = "auto-safe"
+-- Matches hwdec in mpv.conf. Restoring to anything else would quietly leave
+-- decoding worse than it was found.
+local HWDEC_DEFAULT = "auto"
 local HWDEC_FRAMES_DEFAULT = 256
 local HWDEC_FRAMES_DIRECT = 16
 -- Only RTX is here. scale_cuda and the libplacebo avfilter were both tried:
@@ -1144,16 +1469,22 @@ end
 
 -- ============================================================
 -- Sibling media navigation
---   Walks every supported media file in the folder, not just the kind
---   currently open - the point of one viewer for everything is that a
---   folder of mixed footage, stills and audio browses as one sequence.
+--   Two scopes, because a folder of takes is usually not only takes: by
+--   default the arrows and the << >> buttons walk video and nothing else,
+--   so stills, thumbnails and sidecar audio do not get paged through. The
+--   other scope is every supported file, which browses a mixed folder as
+--   one sequence. Assigned below, once save_state() exists to persist it.
 -- ============================================================
 
+local browse_all = false
+local browse_scope_toggle
+
 local function sibling_list(dir)
+    local allowed = browse_all and EXT_ALL or EXT_VIDEO
     local files = {}
     for _, f in ipairs(utils.readdir(dir, "files") or {}) do
         local e = ext_of(f)
-        if e and EXT_ALL[e] then files[#files + 1] = f end
+        if e and allowed[e] then files[#files + 1] = f end
     end
     table.sort(files, function(a, b) return a:lower() < b:lower() end)
     return files
@@ -1166,11 +1497,30 @@ local function play_sibling(offset)
     if not dir then emit("Cannot resolve folder", 1.5) return end
 
     local files = sibling_list(dir)
-    if #files == 0 then emit("No other media in this folder", 1.5) return end
+    if #files == 0 then
+        emit(browse_all and "No other media in this folder"
+                         or "No video in this folder - press b to browse everything", 2.5)
+        return
+    end
 
-    local idx = 1
-    for i, f in ipairs(files) do if f == filename then idx = i break end end
-    local new_idx = ((idx - 1 + offset) % #files) + 1
+    -- The open file need not be in the list at all: it is a photo, say, while
+    -- the scope is video only. Step from where it would sort rather than from
+    -- a hardcoded index 1, which always jumped to the top of the folder.
+    local idx, before = nil, 0
+    local key = filename:lower()
+    for i, f in ipairs(files) do
+        if f == filename then idx = i break end
+        if f:lower() < key then before = i end
+    end
+
+    local new_idx
+    if idx then
+        new_idx = ((idx - 1 + offset) % #files) + 1
+    elseif offset >= 0 then
+        new_idx = (before % #files) + 1
+    else
+        new_idx = before == 0 and #files or before
+    end
     mp.commandv("loadfile", dir .. "\\" .. files[new_idx], "replace")
     emit(string.format("(%d/%d) %s", new_idx, #files, files[new_idx]), 1.5)
 end
@@ -1184,20 +1534,37 @@ local function prev_media() play_sibling(-1) end
 
 -- ASS is SDR. On an HDR swapchain, translucent greys wash out; keep the bar
 -- nearly opaque and the text fully white so it still reads against PQ video.
-local COL_BG, COL_BG_A = "&H141414&", "&H12&"
-local COL_BTN, COL_BTN_A = "&H2C2C2C&", "&H08&"
-local COL_TEXT, COL_TEXT_DARK = "&HFFFFFF&", "&H000000&"
-local COL_TRACK = "&H505050&"
-local COL_YELLOW, COL_BLUE, COL_GREEN = "&H00D2FF&", "&HFF901E&", "&H71CC2E&"
-local COL_PHOTO, COL_AUDIO = "&HE0A050&", "&H50C0E0&"
-local COL_HDR = "&HD25AFF&"
+-- Every colour here is the matching entry from Theme in src/MainForm.cs, so
+-- the bar over the picture and the cards beside it are one palette. ASS wants
+-- &HBBGGRR&, the reverse of the RGB byte order used there - photo, audio and
+-- HDR had been transcribed straight across and so rendered as each other's
+-- opposite: the photo accent came out blue and the audio one yellow.
+local COL_BG        = "&H1E1818&"  -- CardBg         24,  24,  30
+local COL_BTN       = "&H2C2424&"  -- button face    36,  36,  44
+local COL_BORDER    = "&H423636&"  -- card border    54,  54,  66
+local COL_TRACK     = "&H322A2A&"  -- slider track   42,  42,  50
+local COL_TEXT      = "&HFFFFFF&"
+local COL_DIM       = "&H968C8C&"  -- Dim           140, 140, 150
+local COL_TEXT_DARK = "&H141010&"  -- text on accent  16,  16,  20
+local COL_YELLOW, COL_BLUE, COL_GREEN = "&H00D0FF&", "&HFF9838&", "&H78D040&"
+local COL_PHOTO, COL_AUDIO = "&H58A8F0&", "&HF0C858&"
+local COL_HDR = "&HFF5AD2&"
 local COL_ACCENT = COL_YELLOW
+
+-- Win11Card rounds at 8px and Win11Button at 6px; kept in unscaled units
+-- here so the bar's corners stay the panel's corners at any UI scale.
+local R_CARD, R_BTN = 8, 6
+
+-- Shuttle range. One constant so the drawing, the slider and the wheel all
+-- agree on what the far end of the track means.
+local SHUTTLE_MAX = 3.0
 
 local help_visible = false
 local last_mb, last_mt = -1, -1
 
 local SHORTCUTS = {
     { "Left / Right  or  < / >  or  PgUp / PgDn", "Previous / next file in folder" },
+    { "b", "Browse videos only / every media file" },
     { "Shift+Left / Shift+Right", "Step one frame" },
     { "s", "Slow-mo conform (video)" },
     { "e", "Export frame / image to Exports" },
@@ -1215,6 +1582,8 @@ local SHORTCUTS = {
     { "h  /  F1", "Toggle this panel" },
     { "Wheel", "Video: shuttle speed.  Photo: zoom" },
     { "Ctrl+Wheel   Drag", "Zoom   /   pan a zoomed image" },
+    { "c", "Adjust the crop on the picture" },
+    { "Enter / Esc  (adjusting)", "Apply the crop / cancel" },
     { "Drag (crop on)", "Move the full frame inside the crop" },
     { "Alt+Arrows", "Nudge crop position" },
 }
@@ -1260,11 +1629,12 @@ local function round_rect(ass, x0, y0, x1, y1, r, colour, alpha)
     ass:draw_stop()
 end
 
-local function glass_border(ass, x0, y0, x1, y1, r, colour, alpha)
+local function glass_border(ass, x0, y0, x1, y1, r, colour, alpha, width)
     if x1 <= x0 or y1 <= y0 then return end
     ass:new_event()
     ass:pos(0, 0)
-    ass:append(string.format("{\\an7\\bord1\\shad0\\3c%s\\3a%s\\1a&HFF&}", colour or "&HFFFFFF&", alpha or "&HC0&"))
+    ass:append(string.format("{\\an7\\bord%.2f\\shad0\\3c%s\\3a%s\\1a&HFF&}",
+        width or 1, colour or "&HFFFFFF&", alpha or "&HC0&"))
     ass:draw_start()
     if ass.round_rect_cw and r and r > 0 then
         ass:round_rect_cw(x0, y0, x1, y1, r)
@@ -1274,16 +1644,50 @@ local function glass_border(ass, x0, y0, x1, y1, r, colour, alpha)
     ass:draw_stop()
 end
 
+-- Segoe UI is named explicitly: mpv would otherwise fall back to its generic
+-- sans and the bar would not be set in the face the control cards use.
 local function text(ass, x, y, align, size, colour, str)
     ass:new_event()
     ass:pos(x, y)
-    ass:append(string.format("{\\an%d\\bord2.2\\shad0\\3c&H000000&\\3a&H20&\\fs%d\\1c%s}%s",
+    ass:append(string.format(
+        "{\\an%d\\bord2.2\\shad0\\3c&H000000&\\3a&H20&\\fnSegoe UI\\fs%d\\1c%s}%s",
         align, math.floor(size + 0.5), colour, str))
 end
 
-local function inside(b, x, y) return x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] end
+local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 
-local render
+-- The panel's sliders draw a white disc ringed in the accent colour
+-- (Win11Slider.OnPaint); every thumb on the bar is that same object.
+local function thumb(ass, x, y, r, colour)
+    round_rect(ass, x - r, y - r, x + r, y + r, r, COL_TEXT, "&H00&")
+    glass_border(ass, x - r, y - r, x + r, y + r, r, colour or COL_ACCENT, "&H00&", 2)
+end
+
+-- Playback rate as one signed number: negative is reverse, zero is paused.
+-- The shuttle, the wheel and the keyboard all read and write it through
+-- these two, so they cannot drift apart on what "0.5x backward" means.
+local function signed_speed()
+    if mp.get_property_bool("pause") then return 0 end
+    local sp = mp.get_property_number("speed") or 1.0
+    return (mp.get_property("play-direction") == "backward") and -sp or sp
+end
+
+local function apply_signed_speed(speed)
+    speed = clamp(speed, -SHUTTLE_MAX, SHUTTLE_MAX)
+    if math.abs(speed) < 0.05 then          -- snap to a clean stop
+        mp.set_property_bool("pause", true)
+        mp.set_property_number("speed", 1.0)
+        return
+    end
+    local dir = speed < 0 and "backward" or "forward"
+    if dir ~= (mp.get_property("play-direction") or "forward") then
+        mp.set_property("play-direction", dir)
+    end
+    mp.set_property_number("speed", math.abs(speed))
+    mp.set_property_bool("pause", false)
+end
+
+local function inside(b, x, y) return x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] end
 
 local function toggle_help()
     -- With the panel open the shortcut list lives there permanently, so
@@ -1305,14 +1709,59 @@ local function draw_help(ass, w, h, S)
     local x0, y0 = (w - pw) / 2, math.max(8, (h - ph) / 2)
 
     rect(ass, 0, 0, w, h, "&H000000&", "&H99&")
-    round_rect(ass, x0, y0, x0 + pw, y0 + ph, 10 * S, COL_BG, "&H10&")
-    glass_border(ass, x0, y0, x0 + pw, y0 + ph, 10 * S, "&HFFFFFF&", "&HB0&")
+    round_rect(ass, x0, y0, x0 + pw, y0 + ph, R_CARD * S, COL_BG, "&H08&")
+    glass_border(ass, x0, y0, x0 + pw, y0 + ph, R_CARD * S, COL_BORDER, "&H20&")
     text(ass, x0 + pad, y0 + pad, 7, fs + 3, COL_ACCENT, "Shortcuts   (click anywhere to close)")
     for i, r in ipairs(SHORTCUTS) do
         local y = y0 + pad + row_h * i
         text(ass, x0 + pad, y, 7, fs, COL_ACCENT, r[1])
         text(ass, x0 + pad + pw * 0.44, y, 7, fs, COL_TEXT, r[2])
     end
+end
+
+-- The crop box, drawn over the picture while the adjust mode is on. Source
+-- pixels are the state; everything here is that state mapped to the screen.
+function cropui.draw(ass, S)
+    local vx0, vy0, vx1, vy1 = cropui.video_rect()
+    if not vx0 then return end
+    local x0, y0 = cropui.to_osd(crop.x, crop.y)
+    local x1, y1 = cropui.to_osd(crop.x + crop.w, crop.y + crop.h)
+    if not x0 or not x1 then return end
+
+    -- Dimming what falls outside, in four pieces, leaves the frame you are
+    -- keeping as the only part of the picture at full brightness.
+    rect(ass, vx0, vy0, vx1, y0, "&H000000&", "&H90&")
+    rect(ass, vx0, y1, vx1, vy1, "&H000000&", "&H90&")
+    rect(ass, vx0, y0, x0, y1, "&H000000&", "&H90&")
+    rect(ass, x1, y0, vx1, y1, "&H000000&", "&H90&")
+
+    -- Thirds, the way a camera's guide grid draws them.
+    for i = 1, 2 do
+        local gx = x0 + (x1 - x0) * i / 3
+        local gy = y0 + (y1 - y0) * i / 3
+        rect(ass, gx - 0.5 * S, y0, gx + 0.5 * S, y1, "&HFFFFFF&", "&HB0&")
+        rect(ass, x0, gy - 0.5 * S, x1, gy + 0.5 * S, "&HFFFFFF&", "&HB0&")
+    end
+
+    glass_border(ass, x0, y0, x1, y1, 0, COL_ACCENT, "&H00&", 2)
+
+    local k = 5 * S
+    for _, id in ipairs(cropui.HANDLES) do
+        local hx, hy = cropui.handle_pos(id)
+        local ox, oy = cropui.to_osd(hx, hy)
+        if ox then
+            round_rect(ass, ox - k, oy - k, ox + k, oy + k, 2 * S, COL_TEXT, "&H00&")
+            glass_border(ass, ox - k, oy - k, ox + k, oy + k, 2 * S, COL_ACCENT, "&H00&", 2)
+        end
+    end
+
+    -- The size sits above the box, or inside it when the box is against the
+    -- top of the frame and there is no room left over the picture.
+    local label = string.format("%d x %d   %s", even_px(crop.w), even_px(crop.h),
+        crop.rw > 0 and crop.label or "free")
+    local ly, align = y0 - 8 * S, 2
+    if ly < (STATUS_H + 6) * S then ly, align = y0 + 8 * S, 8 end
+    text(ass, (x0 + x1) / 2, ly, align, 13 * S, COL_TEXT, label)
 end
 
 -- Audio has no picture, so the empty frame gets the file's identity instead
@@ -1325,7 +1774,7 @@ local function draw_audio_face(ass, w, h, S, top, bottom)
     local cy = (top + bottom) / 2
     text(ass, w / 2, cy - 18 * S, 5, 22 * S, COL_ACCENT, title)
     if artist then text(ass, w / 2, cy + 12 * S, 5, 15 * S, COL_TEXT, artist) end
-    if album then text(ass, w / 2, cy + 36 * S, 5, 13 * S, COL_TRACK, album) end
+    if album then text(ass, w / 2, cy + 36 * S, 5, 13 * S, COL_DIM, album) end
 end
 
 local function upscale_label()
@@ -1337,6 +1786,28 @@ local function upscale_label()
     for _ in setting("shaders", ""):gmatch("[^,]+") do n = n + 1 end
     if n > 0 then return "GLSL", true end
     return "Up", false
+end
+
+-- Speed shuttle: reverse at the left, forward at the right, a detent at the
+-- centre for a standstill, and a tick at the speed a slow-mo conform would
+-- pick - the clip's "correct" rate, there to aim at.
+local function draw_shuttle(ass, x0, x1, cy, S, signed)
+    local trk, k = 5 * S, 6 * S
+    local mid, half = (x0 + x1) / 2, (x1 - x0) / 2
+    round_rect(ass, x0, cy - trk / 2, x1, cy + trk / 2, trk / 2, COL_TRACK, "&H10&")
+    round_rect(ass, mid - 1 * S, cy - trk, mid + 1 * S, cy + trk, 1 * S, COL_DIM, "&H00&")
+
+    local fps_val = source_fps or detect_fps() or 30
+    local conform = fps_val > 0 and (target_fps() / fps_val) or 1.0
+    local def_x = mid + half * clamp(conform / SHUTTLE_MAX, -1, 1)
+    round_rect(ass, def_x - 1.5 * S, cy - trk, def_x + 1.5 * S, cy + trk, 1 * S, COL_ACCENT, "&H50&")
+
+    -- Fills out from the detent rather than from the left end, the way the
+    -- panel's centre-zero sliders do.
+    local tx = mid + half * clamp(signed / SHUTTLE_MAX, -1, 1)
+    round_rect(ass, math.min(mid, tx), cy - trk / 2, math.max(mid, tx), cy + trk / 2,
+        trk / 2, COL_ACCENT, "&H00&")
+    thumb(ass, tx, cy, k)
 end
 
 render = function()
@@ -1367,13 +1838,17 @@ render = function()
     local sub_y0, sub_y1 = h - bar_h - sub_h, h - bar_h
     local by0, by1 = h - bar_h, h
 
-    -- Win11 Acrylic Floating Dock background
+    -- The dock is Win11Card at OSD scale: the same fill, the same one-pixel
+    -- border in the same colour, and the same specular line along the top.
     local dock_pad = 6 * S
-    round_rect(ass, dock_pad, sub_y0 - 2 * S, w - dock_pad, h - 3 * S, 7 * S, COL_BG, "&H18&")
-    glass_border(ass, dock_pad, sub_y0 - 2 * S, w - dock_pad, h - 3 * S, 7 * S, "&HFFFFFF&", "&HD5&")
-    round_rect(ass, dock_pad + 8 * S, sub_y0 - 2 * S, w - dock_pad - 8 * S, sub_y0 - 1 * S, 1 * S, "&HFFFFFF&", "&HAA&")
+    local dock_y = sub_y0 - 2 * S
+    round_rect(ass, dock_pad, dock_y, w - dock_pad, h - 3 * S, R_CARD * S, COL_BG, "&H14&")
+    glass_border(ass, dock_pad, dock_y, w - dock_pad, h - 3 * S, R_CARD * S, COL_BORDER, "&H20&")
+    round_rect(ass, dock_pad + R_CARD * S, dock_y, w - dock_pad - R_CARD * S, dock_y + 1 * S,
+        0, "&HFFFFFF&", "&HE0&")
 
     if is_audio() then draw_audio_face(ass, w, h, S, status_h, sub_y0) end
+    if crop.editing then cropui.draw(ass, S) end
 
     local dur = mp.get_property_number("duration") or 0
     local pos = mp.get_property_number("time-pos") or 0
@@ -1389,9 +1864,9 @@ render = function()
     local function left(bw, label, active, fn)
         local x0, x1 = lx, lx + bw
         lx = x1 + gap
-        local btn_r = 5 * S
+        local btn_r = R_BTN * S
         round_rect(ass, x0, cy0, x1, cy1, btn_r, active and COL_ACCENT or COL_BTN, active and "&H00&" or "&H10&")
-        glass_border(ass, x0, cy0, x1, cy1, btn_r, active and COL_ACCENT or "&HFFFFFF&", active and "&H30&" or "&HD5&")
+        glass_border(ass, x0, cy0, x1, cy1, btn_r, active and COL_ACCENT or COL_BORDER, "&H20&")
         text(ass, (x0 + x1) / 2, (cy0 + cy1) / 2, 5, fs, active and COL_TEXT_DARK or COL_TEXT, label)
         ui.buttons[#ui.buttons + 1] = { x0, cy0, x1, cy1, fn }
     end
@@ -1400,10 +1875,10 @@ render = function()
     local function right(bw, label, active, fn, colour)
         local x1, x0 = rx, rx - bw
         rx = x0 - gap
-        local btn_r = 5 * S
+        local btn_r = R_BTN * S
         local ac = colour or COL_ACCENT
         round_rect(ass, x0, cy0, x1, cy1, btn_r, active and ac or COL_BTN, active and "&H00&" or "&H10&")
-        glass_border(ass, x0, cy0, x1, cy1, btn_r, active and ac or "&HFFFFFF&", active and "&H30&" or "&HD5&")
+        glass_border(ass, x0, cy0, x1, cy1, btn_r, active and ac or COL_BORDER, "&H20&")
         text(ass, (x0 + x1) / 2, (cy0 + cy1) / 2, 5, fs, active and COL_TEXT_DARK or COL_TEXT, label)
         ui.buttons[#ui.buttons + 1] = { x0, cy0, x1, cy1, fn }
     end
@@ -1412,14 +1887,27 @@ render = function()
     if not is_photo() then
         left(58 * S, paused and "Play" or "Pause", false, function() mp.commandv("cycle", "pause") end)
     end
-    left(34 * S, "<<", false, prev_media)
-    left(34 * S, ">>", false, next_media)
-    if is_photo() then
-        left(44 * S, "Fit", false, zoom_fit)
-        left(44 * S, "1:1", false, zoom_actual)
+    if crop.editing then
+        -- A mode is on, so the way out of it is the most prominent thing in
+        -- the bar; the file-stepping buttons would only leave it by surprise.
+        left(62 * S, "Apply", true, cropui.apply)
+        left(66 * S, "Cancel", false, cropui.cancel)
+        left(48 * S, "Full", false, cropui.full)
+        local ratio_label = crop.rw > 0 and crop.label or "Free"
+        left((#ratio_label * 8 + 18) * S, ratio_label, crop.rw > 0, cropui.cycle_ratio)
+    else
+        left(34 * S, "<<", false, prev_media)
+        left(34 * S, ">>", false, next_media)
+        local scope_label = browse_all and "All media" or "Videos"
+        left((#scope_label * 8 + 18) * S, scope_label, browse_all,
+            function() browse_scope_toggle() end)
+        if is_photo() then
+            left(44 * S, "Fit", false, zoom_fit)
+            left(44 * S, "1:1", false, zoom_actual)
+        end
+        left(34 * S, "i", false, show_info)
+        left(30 * S, "?", help_visible, toggle_help)
     end
-    left(34 * S, "i", false, show_info)
-    left(30 * S, "?", help_visible, toggle_help)
 
     -- ---- right cluster ----
     local up_label, up_on = upscale_label()
@@ -1434,6 +1922,7 @@ render = function()
     if is_photo() then
         right(72 * S, "Export", false, export_frame)
         right(40 * S, "Rot", false, function() rotate_by(90) end)
+        if not crop.editing then right(52 * S, "Crop", crop.on, cropui.start) end
     elseif is_audio() then
         right(52 * S, muted and "Mute" or (math.floor(vol) .. "%"), muted,
             function() mp.commandv("cycle", "mute") end)
@@ -1443,83 +1932,76 @@ render = function()
             function() mp.commandv("cycle", "mute") end)
         right(66 * S, "Sound", false, audio_menu)
         right(72 * S, "Export", false, export_frame)
+        if not crop.editing then right(52 * S, "Crop", crop.on, cropui.start) end
         right(86 * S, slowmo_active and string.format("%.1fx", (source_fps or 24) / 24) or "Slow-mo",
             slowmo_active, slowmo_toggle)
     end
 
-    -- ---- centre: timeline for time-based media, zoom readout for photos ----
+    -- ---- centre of the bar: the shuttle, or a readout for photos ----
     if is_photo() then
         local label = string.format("%dx%d   %.0f%%   %s", MEDIA.w, MEDIA.h,
             display_scale() * 100, MEDIA.ext:upper())
         text(ass, (lx + rx) / 2, (cy0 + cy1) / 2, 5, fs, COL_TEXT, label)
-        ui.seekbar = nil
+        ui.speedbar = nil
     else
+        local mid_y = (cy0 + cy1) / 2
+        local signed = signed_speed()
         local time_str = fmt_time(pos) .. " / " .. fmt_time(dur)
-        local time_w = (#time_str * 8 + 12) * S
-        text(ass, lx, (cy0 + cy1) / 2, 4, fs, COL_TEXT, time_str)
-        lx = lx + time_w
+        local speed_str = signed == 0 and "Paused" or string.format("%.2fx", signed)
 
-        local sx0, sx1 = lx + 4 * S, rx - 4 * S
-        if sx1 - sx0 > 30 * S then
-            local sy = (cy0 + cy1) / 2
-            local th = 5 * S
-            round_rect(ass, sx0, sy - th / 2, sx1, sy + th / 2, 2.5 * S, COL_TRACK, "&H20&")
-            if dur > 0 then
-                local fx = sx0 + (sx1 - sx0) * math.max(0, math.min(1, pos / dur))
-                round_rect(ass, sx0, sy - th / 2, fx, sy + th / 2, 2.5 * S, COL_ACCENT, "&H00&")
-                local k = 6 * S
-                round_rect(ass, fx - k, sy - k * 1.3, fx + k, sy + k * 1.3, 3.5 * S, "&HFFFFFF&", "&H00&")
-                glass_border(ass, fx - k, sy - k * 1.3, fx + k, sy + k * 1.3, 3.5 * S, COL_ACCENT, "&H00&")
-            end
-            ui.seekbar = { sx0, by0, sx1, by1 }
+        -- Both readouts are pinned to the ends and the shuttle runs between
+        -- them, so neither number moves as the thumb travels.
+        text(ass, lx, mid_y, 4, fs, COL_TEXT, time_str)
+        text(ass, rx, mid_y, 6, fs, COL_ACCENT, speed_str)
+
+        local sx0 = lx + (#time_str * 8 + 16) * S
+        local sx1 = rx - (#speed_str * 8 + 16) * S
+        if sx1 - sx0 > 40 * S then
+            draw_shuttle(ass, sx0, sx1, mid_y, S, signed)
+            ui.speedbar = { sx0, cy0, sx1, cy1 }
         else
-            ui.seekbar = nil
+            ui.speedbar = nil
         end
     end
 
-    -- ---- sub-bar: zoom slider for photos, shuttle for everything else ----
+    -- ---- strip above the bar: the timeline, or zoom for photos ----
+    -- The timeline gets the full width because scrubbing is the one control
+    -- whose precision is worth the whole window; the shuttle only has to
+    -- resolve six speeds and sits in the bar with the buttons it belongs to.
     local sub_x0, sub_x1 = 12 * S, w - 12 * S
-    local sub_sy = (sub_y0 + sub_y1) / 2
-    local th = 4.5 * S
+    local sub_cy = (sub_y0 + sub_y1) / 2
+    local trk = 5 * S
     local k = 6 * S
-    round_rect(ass, sub_x0, sub_sy - th / 2, sub_x1, sub_sy + th / 2, 2.2 * S, COL_TRACK, "&H20&")
 
     if is_photo() then
         -- Zoom, log-scaled: the left end is 0.25x of fit, the right end 16x.
+        round_rect(ass, sub_x0, sub_cy - trk / 2, sub_x1, sub_cy + trk / 2, trk / 2, COL_TRACK, "&H10&")
         local z = mp.get_property_number("video-zoom") or 0
-        local pct = (z - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN)
         local fit_x = sub_x0 + (sub_x1 - sub_x0) * ((0 - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN))
-        round_rect(ass, fit_x - 2, sub_sy - th, fit_x + 2, sub_sy + th, 1 * S, COL_ACCENT, "&H00&")
-        local tx = sub_x0 + (sub_x1 - sub_x0) * math.max(0, math.min(1, pct))
-        round_rect(ass, tx - k, sub_sy - k * 1.3, tx + k, sub_sy + k * 1.3, 3.5 * S, COL_ACCENT, "&H00&")
-        glass_border(ass, tx - k, sub_sy - k * 1.3, tx + k, sub_sy + k * 1.3, 3.5 * S, "&HFFFFFF&", "&H40&")
-        text(ass, tx, sub_sy - 12 * S, 2, 11 * S, COL_TEXT,
-            string.format("%.0f%%", display_scale() * 100))
+        round_rect(ass, fit_x - 1.5 * S, sub_cy - trk, fit_x + 1.5 * S, sub_cy + trk, 1 * S, COL_DIM, "&H00&")
+        local tx = sub_x0 + (sub_x1 - sub_x0) * clamp((z - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN), 0, 1)
+        round_rect(ass, math.min(fit_x, tx), sub_cy - trk / 2, math.max(fit_x, tx),
+            sub_cy + trk / 2, trk / 2, COL_ACCENT, "&H00&")
+        thumb(ass, tx, sub_cy, k)
+        ui.zoombar = { sub_x0, sub_y0, sub_x1, sub_y1 }
+        ui.seekbar = nil
     else
-        local mid_x = (sub_x0 + sub_x1) / 2
-        round_rect(ass, mid_x - 1, sub_sy - th, mid_x + 1, sub_sy + th, 1 * S, COL_TEXT, "&H00&")
-
-        -- Where the slow-mo conform would sit, so the shuttle shows the
-        -- clip's "correct" playback speed as a tick to aim for.
-        local tgt = target_fps()
-        local fps_val = source_fps or detect_fps() or 30
-        local def_speed = fps_val > 0 and (tgt / fps_val) or 1.0
-        local def_x = mid_x + ((sub_x1 - sub_x0) / 2) * (def_speed / 3.0)
-        round_rect(ass, def_x - 2, sub_sy - th, def_x + 2, sub_sy + th, 1 * S, COL_ACCENT, "&H00&")
-
-        local cur_speed = mp.get_property_number("speed") or 1.0
-        local cur_dir = mp.get_property("play-direction") or "forward"
-        local signed = cur_dir == "backward" and -cur_speed or cur_speed
-        if paused then signed = 0 end
-
-        local tx = mid_x + ((sub_x1 - sub_x0) / 2) * (signed / 3.0)
-        tx = math.max(sub_x0, math.min(sub_x1, tx))
-        round_rect(ass, tx - k, sub_sy - k * 1.3, tx + k, sub_sy + k * 1.3, 3.5 * S, COL_ACCENT, "&H00&")
-        glass_border(ass, tx - k, sub_sy - k * 1.3, tx + k, sub_sy + k * 1.3, 3.5 * S, "&HFFFFFF&", "&H40&")
-        text(ass, tx, sub_sy - 12 * S, 2, 11 * S, COL_TEXT,
-            signed == 0 and "Pause" or string.format("%.2fx", signed))
+        round_rect(ass, sub_x0, sub_cy - trk / 2, sub_x1, sub_cy + trk / 2, trk / 2, COL_TRACK, "&H10&")
+        if dur > 0 then
+            -- How far the demuxer has read ahead, behind the played part: on a
+            -- slow source it says whether a scrub will land instantly.
+            local cache = mp.get_property_number("demuxer-cache-time")
+            if cache and cache > pos then
+                local cx = sub_x0 + (sub_x1 - sub_x0) * clamp(cache / dur, 0, 1)
+                round_rect(ass, sub_x0, sub_cy - trk / 2, cx, sub_cy + trk / 2, trk / 2, COL_DIM, "&H90&")
+            end
+            local fx = sub_x0 + (sub_x1 - sub_x0) * clamp(pos / dur, 0, 1)
+            round_rect(ass, sub_x0, sub_cy - trk / 2, fx, sub_cy + trk / 2, trk / 2, COL_ACCENT, "&H00&")
+            thumb(ass, fx, sub_cy, k)
+        end
+        ui.seekbar = { sub_x0, sub_y0, sub_x1, sub_y1 }
+        ui.zoombar = nil
     end
-    ui.subbar = { sub_x0, sub_y0, sub_x1, sub_y1 }
 
     -- ---- top-left status strip ----
     local status
@@ -1551,8 +2033,8 @@ render = function()
     local chip_w = math.min(w - 20 * S, (#status * 7.6 + 28) * S)
     local chip_x0, chip_y0 = 8 * S, 4 * S
     local chip_x1, chip_y1 = chip_x0 + chip_w, chip_y0 + status_h - 2 * S
-    round_rect(ass, chip_x0, chip_y0, chip_x1, chip_y1, 6 * S, COL_BG, "&H18&")
-    glass_border(ass, chip_x0, chip_y0, chip_x1, chip_y1, 6 * S, "&HFFFFFF&", "&HD0&")
+    round_rect(ass, chip_x0, chip_y0, chip_x1, chip_y1, R_BTN * S, COL_BG, "&H14&")
+    glass_border(ass, chip_x0, chip_y0, chip_x1, chip_y1, R_BTN * S, COL_BORDER, "&H20&")
     text(ass, chip_x0 + 10 * S, (chip_y0 + chip_y1) / 2, 4, 12 * S, COL_ACCENT, status)
 
     if help_visible then draw_help(ass, w, h, S) end
@@ -1576,40 +2058,32 @@ local function seek_to_x(x)
 end
 
 local function scrub_begin(x)
-    -- Scrubbing against live playback fights the seek, so grabbing pauses.
+    -- Scrubbing against live playback fights the seek, so grabbing pauses -
+    -- and letting go hands playback back the way it was found, rather than
+    -- leaving a clip stopped because it was nudged along the timeline.
+    ui.resume_after_scrub = not mp.get_property_bool("pause")
     mp.set_property_bool("pause", true)
     ui.dragging_seekbar = true
     seek_to_x(x)
 end
 
+-- Where along a slider the pointer landed, 0..1.
+local function fraction_along(box, x)
+    if not box or box[3] <= box[1] then return nil end
+    return clamp((x - box[1]) / (box[3] - box[1]), 0, 1)
+end
+
 -- ---- shuttle (video / audio) ----
 local function set_speed_from_x(x)
-    if not ui.subbar then return end
-    local sx0, sx1 = ui.subbar[1], ui.subbar[3]
-    if sx1 <= sx0 then return end
-
-    local pct = math.max(0, math.min(1, (x - sx0) / (sx1 - sx0)))
-    local speed = (pct - 0.5) * 6.0
-
-    if math.abs(speed) < 0.01 then
-        mp.set_property_bool("pause", true)
-        mp.set_property_number("speed", 1.0)
-    else
-        local new_dir = speed < 0 and "backward" or "forward"
-        if new_dir ~= (mp.get_property("play-direction") or "forward") then
-            mp.set_property("play-direction", new_dir)
-        end
-        mp.set_property_number("speed", math.abs(speed))
-        mp.set_property_bool("pause", false)
-    end
+    local pct = fraction_along(ui.speedbar, x)
+    if not pct then return end
+    apply_signed_speed((pct - 0.5) * 2 * SHUTTLE_MAX)
 end
 
 -- ---- zoom slider (photos) ----
 local function set_zoom_from_x(x)
-    if not ui.subbar then return end
-    local sx0, sx1 = ui.subbar[1], ui.subbar[3]
-    if sx1 <= sx0 then return end
-    local pct = math.max(0, math.min(1, (x - sx0) / (sx1 - sx0)))
+    local pct = fraction_along(ui.zoombar, x)
+    if not pct then return end
     set_zoom(ZOOM_MIN + pct * (ZOOM_MAX - ZOOM_MIN))
 end
 
@@ -1631,9 +2105,15 @@ local function pan_to(x, y)
 end
 
 local function drag_end()
+    if ui.dragging_seekbar and ui.resume_after_scrub then
+        mp.set_property_bool("pause", false)
+    end
+    ui.resume_after_scrub = false
     ui.dragging_seekbar = false
-    ui.dragging_subbar = false
+    ui.dragging_speed = false
+    ui.dragging_zoom = false
     pan_from = nil
+    if cropui.release() then return end
     if crop_drag then
         local clicked = not crop_drag.moved
         if crop.on then apply_crop_vf(false) end
@@ -1652,17 +2132,31 @@ mp.add_key_binding("MBTN_LEFT", "ui_mbtn_left", function(e)
     for _, b in ipairs(ui.buttons) do
         if inside(b, x, y) then b[5]() return end
     end
-    if ui.subbar and inside(ui.subbar, x, y) then
-        ui.dragging_subbar = true
-        if is_photo() then set_zoom_from_x(x) else set_speed_from_x(x) end
-        return
-    end
     if ui.seekbar and inside(ui.seekbar, x, y) then
         scrub_begin(x)
         return
     end
+    if ui.speedbar and inside(ui.speedbar, x, y) then
+        ui.dragging_speed = true
+        set_speed_from_x(x)
+        return
+    end
+    if ui.zoombar and inside(ui.zoombar, x, y) then
+        ui.dragging_zoom = true
+        set_zoom_from_x(x)
+        return
+    end
 
-    -- Picture clicks. Crop mode: drag slides the full frame inside the
+    -- While the crop is being adjusted the picture is the box: grab a handle
+    -- to resize, the inside to move, and clicking off it does nothing rather
+    -- than starting playback under the overlay.
+    if crop.editing then
+        local hit = cropui.hit(x, y)
+        if hit then cropui.grab(hit, x, y) end
+        return
+    end
+
+    -- Picture clicks. Crop applied: drag slides the full frame inside the
     -- ratio window. Photos pan when zoomed. Video otherwise play/pause.
     local chrome_bottom = ui.osd_h - (BAR_H + SUBBAR_H) * effective_scale()
     if y < chrome_bottom then
@@ -1680,8 +2174,12 @@ mp.observe_property("mouse-pos", "native", function(_, v)
     if not v then return end
     if ui.dragging_seekbar then
         seek_to_x(v.x)
-    elseif ui.dragging_subbar then
-        if is_photo() then set_zoom_from_x(v.x) else set_speed_from_x(v.x) end
+    elseif ui.dragging_speed then
+        set_speed_from_x(v.x)
+    elseif ui.dragging_zoom then
+        set_zoom_from_x(v.x)
+    elseif cropui.drag then
+        cropui.drag_to(v.x, v.y)
     elseif crop_drag then
         crop_drag_to(v.x, v.y)
     elseif pan_from then
@@ -1694,23 +2192,7 @@ end)
 -- ============================================================
 
 local function adjust_speed(delta)
-    local cur_speed = mp.get_property_number("speed") or 1.0
-    local cur_dir = mp.get_property("play-direction") or "forward"
-    local speed = cur_dir == "backward" and -cur_speed or cur_speed
-    if mp.get_property_bool("pause") then speed = 0 end
-
-    speed = math.max(-3.0, math.min(3.0, speed + delta))
-    if math.abs(speed) < 0.05 then speed = 0 end   -- snap to a clean stop
-
-    if speed == 0 then
-        mp.set_property_bool("pause", true)
-        mp.set_property_number("speed", 1.0)
-    else
-        local new_dir = speed < 0 and "backward" or "forward"
-        if new_dir ~= cur_dir then mp.set_property("play-direction", new_dir) end
-        mp.set_property_number("speed", math.abs(speed))
-        mp.set_property_bool("pause", false)
-    end
+    apply_signed_speed(signed_speed() + delta)
 end
 
 -- One wheel, two meanings: a photo has no timeline to shuttle, so the wheel
@@ -1769,10 +2251,35 @@ local function save_state()
     if path then last_path = path end
     local f = io.open(state_path(), "w")
     if not f then return end
-    f:write(string.format('{"file":"%s","uiScale":%.4f}',
-        path and json_escape(path) or "", ui_scale))
+    f:write(string.format('{"file":"%s","uiScale":%.4f,"browseAll":%s}',
+        path and json_escape(path) or "", ui_scale, tostring(browse_all)))
     f:close()
 end
+
+-- Mirrored into user-data as well as the state file, so the control panel's
+-- toggle and the bar's button are reading and writing the one value: the
+-- panel writes the slot, the observer below picks the change up here.
+local function set_browse_all(v, quiet)
+    v = v and true or false
+    if v ~= browse_all then
+        browse_all = v
+        save_state()
+        if not quiet then
+            emit(v and "Browsing every media file in the folder"
+                    or "Browsing video files only", 2)
+        end
+        render()
+    end
+    mp.set_property("user-data/mi/set_browse_all", v and "yes" or "no")
+end
+
+browse_scope_toggle = function() set_browse_all(not browse_all) end
+
+mp.observe_property("user-data/mi/set_browse_all", "native", function(_, val)
+    if type(val) ~= "string" then return end
+    local want = (val == "yes" or val == "true" or val == "1")
+    if want ~= browse_all then set_browse_all(want, true) end
+end)
 
 -- The window can only be fitted once the decoder has reported real
 -- dimensions, which for some containers lands after file-loaded. The fit is
@@ -1826,7 +2333,11 @@ mp.register_event("file-loaded", function()
     mp.set_property_number("video-pan-x", 0)
     mp.set_property_number("video-pan-y", 0)
     mp.set_property_number("video-rotate", 0)
-    if crop.on then clear_crop(true) end
+    -- A box sized for the last file means nothing over this one.
+    local had_crop = crop.on or crop.editing
+    crop.editing = false
+    crop.saved = nil
+    if had_crop then clear_crop(true) end
 
     fit_pending = true
     fit_tries = 0
@@ -1864,7 +2375,18 @@ if sf then
     sf:close()
     local saved = tonumber(body:match('"uiScale"%s*:%s*([%d%.]+)'))
     if saved and saved >= 0.4 and saved <= 3.0 then ui_scale = saved end
+    browse_all = body:match('"browseAll"%s*:%s*true') ~= nil
+
+    -- Seed the remembered path from what the last session left. Without this a
+    -- single run that never opened a file - the host started idle, or a probe
+    -- ran against the config - wrote an empty name over the real one, and every
+    -- launch after that opened to a black window and wrote the emptiness back.
+    local file = body:match('"file"%s*:%s*"(.-)"')
+    if file and file ~= "" then
+        last_path = file:gsub('\\(.)', '%1')
+    end
 end
+set_browse_all(browse_all, true)
 
 -- ============================================================
 -- Bindings / observers
@@ -1877,6 +2399,17 @@ mp.add_key_binding(nil, "export_frame", export_frame)
 mp.add_key_binding(nil, "audio_menu", audio_menu)
 mp.add_key_binding(nil, "next_media", next_media)
 mp.add_key_binding(nil, "prev_media", prev_media)
+mp.add_key_binding(nil, "browse_scope_toggle", function() browse_scope_toggle() end)
+mp.add_key_binding(nil, "crop_edit_toggle", cropui.toggle)
+mp.add_key_binding(nil, "crop_edit_apply", function()
+    -- Bound to Enter, which otherwise means nothing here: files are stepped
+    -- through with the arrows, not with mpv's playlist.
+    if crop.editing then cropui.apply() end
+end)
+mp.add_key_binding(nil, "crop_edit_cancel", function()
+    -- Bound to Esc. Outside the adjust mode it keeps Esc's usual job.
+    if crop.editing then cropui.cancel() else mp.set_property_bool("fullscreen", false) end
+end)
 mp.add_key_binding(nil, "toggle_help", toggle_help)
 mp.add_key_binding(nil, "hdr_toggle", hdr_toggle)
 mp.add_key_binding(nil, "ui_scale_up", ui_scale_up)
