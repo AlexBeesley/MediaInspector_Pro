@@ -10,7 +10,60 @@ keybindings and Lua UI — so it gets real GPU decode, frame-exact stepping,
 native ProRes/HEVC support and lossless full-resolution export without
 reinventing a media pipeline.
 
-## Launching
+## Two shells, one player
+
+There are two front ends over the same player, and they are interchangeable:
+both start mpv with the same `config/`, the same Lua UI and the same IPC pipe,
+so the picture, the on-video bar, the key bindings and the export paths behave
+identically in either.
+
+| | MediaInspector2 (`app/`) | MediaInspector_Pro (`src/`) |
+|---|---|---|
+| Shell | Electron + HTML | WinForms + C# |
+| Control panel | reflows into as many card columns as it is given | fixed-width card grid |
+| Player state | pushed by mpv as it changes | polled twice a second |
+| Launch | `MediaInspector2.bat` | `MediaInspector_Pro.exe` |
+| The exe | `dist\MediaInspector2-win32-x64\MediaInspector2.exe`, after `npm run build` | `MediaInspector_Pro.exe`, after `Build.ps1` |
+| Needs | `npm install` in `app/` (Electron, koffi) | nothing - builds with the .NET Framework compiler |
+
+MediaInspector2 is the one being developed; the WinForms shell stays until it
+has been lived with for a while. Run one at a time - the IPC socket name is
+fixed, so two shells would fight over the same pipe.
+
+### MediaInspector2
+
+```
+cd app
+npm install          # once: Electron, plus koffi for the few Win32 calls
+npm start            # run from source
+npm run build        # package it: dist\MediaInspector2-win32-x64\MediaInspector2.exe
+```
+
+`MediaInspector2.bat` runs the packaged exe if one has been built and falls back
+to running from source, so it launches either way. Packaging bundles Chromium
+and Node, so the output folder is ~300MB against the WinForms shell's 66KB exe -
+that is the price of the UI toolkit, not of this app. `dist/` is git-ignored.
+
+The exe finds the project by walking up from wherever it sits, which is how it
+locates `config/`, `Exports/` and the player's state file; a copy of `config/`
+ships inside the package as a fallback for a folder that has been moved
+somewhere else, and `MI_ROOT` overrides both.
+
+Both shells build with `app.ico`, drawn by `tools\make-icon.py` from the same
+palette as everything else - the crop brackets around a play triangle, with the
+brackets dropped below 48px where they stop reading. Regenerate it and rebuild
+to change it; neither build embeds an icon that is not there, which is why they
+carried Windows' default for so long.
+
+The picture is a native child window that mpv paints into, positioned over the
+page, which is why the panel lays out *around* it rather than over it. Node
+talks to mpv over the same JSON IPC pipe, but keeps the connection open and
+subscribes to property changes, so the panel is a listener rather than a
+poller. `--shot=<file>.png` renders the panel, writes a PNG of it and exits -
+the successor to `--dump-layout`, for checking the panel's own layout without a
+screen grab.
+
+### MediaInspector_Pro
 
 Run **MediaInspector_Pro.exe**, or drag any media file onto it. If the exe
 isn't built yet, **MediaInspector_Pro.bat** builds it and then starts it.
@@ -81,13 +134,18 @@ video track is audio, and an `.mp3` with cover art is audio, not a photo.
 |---|---|---|---|
 | Accent colour | fps tier (yellow / blue / green) | amber | cyan |
 | Bottom-left | play/pause, prev/next, info | prev/next, fit, 1:1, info | play/pause, prev/next, info |
-| Centre | timeline + time | dimensions, zoom %, format | timeline + time |
-| Sub-bar | shuttle (speed + direction) | zoom slider | shuttle |
+| Centre | time + shuttle + speed | dimensions, zoom %, format | time + shuttle + speed |
+| Strip above the bar | timeline | zoom slider | timeline |
 | Click the picture | play/pause | drag to pan | play/pause |
 | Wheel | shuttle speed | zoom | shuttle speed |
 
-Prev/next walks **every** supported media file in the folder, so a mixed
-folder of clips, stills and audio browses as one sequence.
+Prev/next walks the **video** files in the folder by default. The scope
+button beside the `<<` `>>` arrows (or `b`, or the control panel's *Browse
+videos only* toggle) switches it to every supported media file, so a mixed
+folder of clips, stills and audio browses as one sequence. The choice is
+remembered between sessions. Stepping from a file outside the current scope
+- a photo, while the scope is video only - moves to the next video from
+where that file sorts, rather than jumping to the top of the folder.
 
 ### Formats
 
@@ -111,6 +169,7 @@ it, so the image is letterboxed slightly instead of being overlaid.
 | Key | Action |
 |---|---|
 | `Left` / `Right` or `<` / `>` or `PgUp` / `PgDn` | Previous / next file in the same folder |
+| `b` | Browse videos only / every media file |
 | `Shift+Left` / `Shift+Right` | Step one frame |
 | `s` | Slow-mo: conform source fps to the 24fps target |
 | `e` | Export frame / image to `Exports/` |
@@ -131,17 +190,21 @@ it, so the image is letterboxed slightly instead of being overlaid.
 
 ## Scrubbing
 
-Dragging the seek bar is straight position tracking — the playhead follows
-the pointer. Seeks are exact and paced to the player's own completion
-signal: only one is ever in flight, so it lands on the frame you point at
-instead of snapping to the nearest keyframe, and never queues up more seeks
-than the source can service.
+The **timeline** is the full-width strip above the buttons, because position
+is the one control whose precision is worth the whole window; a dimmer fill
+behind the played part shows how far the demuxer has read ahead. Dragging it
+is straight position tracking — the playhead follows the pointer. Seeks are
+exact and paced to the player's own completion signal: only one is ever in
+flight, so it lands on the frame you point at instead of snapping to the
+nearest keyframe, and never queues up more seeks than the source can
+service. Grabbing it pauses; letting go resumes if it had been playing.
 
-The bar above the timeline is a **shuttle**: which side of centre the thumb
-is on is the direction, how far out it is is the speed, and the centre notch
-is a hard stop. A second tick marks where the slow-mo conform would sit, so
-the clip's "correct" playback speed is something to aim for. Wheel up/down
-nudges the same control.
+The **shuttle** sits in the middle of the button bar, between the running
+time on the left and the current speed on the right. Which side of centre
+the thumb is on is the direction, how far out it is is the speed, and the
+centre notch is a hard stop. A second tick marks where the slow-mo conform
+would sit, so the clip's "correct" playback speed is something to aim for.
+Wheel up/down nudges the same control.
 
 ### Backward playback is the fragile half
 
@@ -160,8 +223,9 @@ source pixel on one screen pixel by reading the real output rectangle back
 out of `osd-dimensions`, rather than recomputing it — which means it stays
 correct with the control bar's letterboxing in the way.
 
-Drag anywhere on the image to pan; the wheel zooms; the sub-bar is a zoom
-slider from ¼× to 16× of fit, with a tick at fit. Every file resets zoom,
+Drag anywhere on the image to pan; the wheel zooms; the strip above the bar
+(where video keeps its timeline) is a zoom slider from ¼× to 16× of fit,
+filling out from a tick at fit. Every file resets zoom,
 pan and rotation, so a zoom left over from the last image never silently
 crops the next one.
 
@@ -206,7 +270,7 @@ same stage's SDR→HDR pass, on a checkbox beside it.
 It only accepts frames that are still D3D11 textures, which has two
 consequences the app handles for you:
 
-* `hwdec=auto-safe` settles on **d3d11va-copy** here — the frames are read
+* `hwdec=auto` settles on **d3d11va-copy** here — the frames are read
   back to system RAM and the filter has nothing to work with. So the mode
   takes over `hwdec` while it is on and hands it back when it is turned off.
 * Direct decode allocates one fixed texture array, and the 256-frame pool
@@ -266,11 +330,49 @@ real frame rate: **yellow** at 30fps or below, **blue** around 60fps,
 slow-mo-ing. Photos are **amber** and audio **cyan**. The control panel
 mirrors whichever is active.
 
+## Cropping
+
+`c`, the bar's **Crop** button, or the panel's *Adjust on the Picture* opens
+the crop box over the video. The filter comes off while it is open, so you
+frame against the whole picture: drag the inside to move the box, drag any of
+the eight handles to resize it, and thirds guides and a live size readout sit
+inside it. **Apply** (or Enter) puts the filter back at that rectangle;
+**Cancel** (or Esc) leaves the crop exactly as it was. **Full** takes the box
+back out to the whole frame, and the ratio button locks it to 1:1, 16:9, 9:16
+and the rest, or leaves it free — a locked ratio is preserved as you resize
+from any handle.
+
+There is one crop rectangle, and the picture, the ratio buttons and the
+W/H/X/Y boxes are all views of it: the boxes track the drag live, and typing
+numbers into them moves the box. Once applied, dragging the picture still
+slides the frame inside the crop, and Alt+Arrows nudge it — both work on the
+box while it is open too.
+
 ## Controls
 
 Every control is a card in the grid beside the picture: transport, media
 navigation, zoom and rotation, display/audio/tools, the colour sliders, GPU
 upscaling, crop, trim, export settings and the shortcut list.
+
+Both shells apply the same rule for the divide between the cards and the
+picture, and MediaInspector2 additionally subtracts the space the player
+reserves for its own bar, so the fit is exact rather than close.
+
+The shape they fit is the shape **on screen**, which is not what mpv's size
+properties report. A phone shoots 3840x2160 with a rotate-90 flag, and `width`,
+`height`, `dwidth`, `dheight` and `video-params/dw|dh` all report it unrotated -
+so a portrait clip was being laid out as landscape and sat in a letterbox a
+third as wide as the window. `video-params/rotate` plus the viewer's own
+`video-rotate` decide whether the two are swapped.
+
+The divide between the cards and the picture follows the media: the picture
+is given the shape it actually wants and the cards take the rest, so a
+portrait clip fills its side of the window instead of sitting in a wide
+letterbox, and the extra width usually buys a second column of cards. It
+re-derives on every resize and whenever the displayed shape changes — a new
+file, or a crop applied or cleared — and never shrinks the cards below one
+column or the picture below its minimum. Dragging the splitter yourself wins
+until the next resize or file.
 
 They drive the player over mpv's JSON IPC socket — real player commands, not
 simulated keypresses. The grid mirrors the media-kind accent colour, dims
