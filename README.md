@@ -318,9 +318,34 @@ box while it is open too.
 
 ## Controls
 
-Every control is a card in the grid beside the picture: transport, media
-navigation, zoom and rotation, display/audio/tools, the colour sliders, GPU
-upscaling, crop, trim, export settings and the shortcut list.
+Every control is a card in the grid beside the picture: transport, media,
+view, crop, audio, playback options, the colour sliders, GPU upscaling, trim,
+window and export settings, and the shortcut list. Every card but the
+transport folds, and remembers whether it was folded, because ten of them do
+not fit on a screen and the ones a given job needs are never all of them.
+
+Two rules shape it, both borrowed from how editing tools are built.
+
+**A control shows its own state.** Speed is a segmented control with the live
+speed lit rather than four buttons that look identical whichever one you
+pressed; mute, loop, A-B loop, HDR, deband, the crop ratio and always-on-top
+light up when they are on. All of it is driven from the same status push the
+player sends, so the panel cannot drift out of step with it. A folded card
+still says what is engaged inside it, on its header. This is what surfaced
+that `loop-file=inf` and `deband=yes` have been on the whole time: the
+settings were in `config/mpv.conf`, but nothing on screen said so.
+
+**The accent means "engaged" and nothing else.** It marks what is on, what is
+selected and where the playhead is. Primary actions get a lighter face rather
+than a coloured one, because a saturated slab reads as a state and an action
+is not a state — a play button filled with accent looks like it is announcing
+something. What is left is a panel where the lit controls are the ones worth
+looking at.
+
+The transport carries the timecode, a scrubber and the button cluster, in that
+order, because that is the order they are read in: where am I, take me
+somewhere, play. The scrubber throttles to one seek in flight, so dragging it
+lands where the pointer is instead of queueing a run of them.
 
 The divide between the cards and the picture subtracts the space the player
 reserves for its own bar, so the fit is exact rather than close.
@@ -343,9 +368,14 @@ until the next resize or file.
 
 They drive the player over mpv's JSON IPC socket — real player commands, not
 simulated keypresses. The grid mirrors the media-kind accent colour, dims
-buttons that don't apply to the open file rather than hiding them, and
+controls that don't apply to the open file rather than hiding them, and
 remembers every setting between runs in `state_panel.json`. Messages that
-would pop up over the picture go to the **Activity log** along the bottom.
+would pop up over the picture surface as a toast along the bottom instead.
+
+The header says what you are looking at and nothing about what the player is
+doing: the media kind, the filename, and the specs worth knowing before
+touching anything — dimensions, frame rate, codec, decode path, HDR. What the
+player is *doing* is the transport card's job, so none of it is said twice.
 
 Note: the IPC socket name is fixed, so one instance runs at a time — fine for
 normal use, not for two files open side by side.
