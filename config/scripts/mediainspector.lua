@@ -1126,10 +1126,10 @@ end
 -- reverse playback can hold a whole keyframe range) blows past what D3D11
 -- will allocate: the decoder fails with "Static surface pool size exceeded"
 -- and silently drops to software. Measured on a 4060 Ti.
--- Matches hwdec in mpv.conf. Restoring to anything else would quietly leave
--- decoding worse than it was found.
-local HWDEC_DEFAULT = "auto"
-local HWDEC_FRAMES_DEFAULT = 256
+-- Matches hwdec and hwdec-extra-frames in mpv.conf. Restoring to anything
+-- else would quietly leave decoding worse than it was found.
+local HWDEC_DEFAULT = "d3d11va-copy,nvdec-copy,auto-copy"
+local HWDEC_FRAMES_DEFAULT = 32
 local HWDEC_FRAMES_DIRECT = 16
 -- Only RTX is here. scale_cuda and the libplacebo avfilter were both tried:
 -- CUDA frames cannot be imported by the D3D11 renderer at all, and under

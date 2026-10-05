@@ -239,14 +239,14 @@ same stage's SDR→HDR pass, on a checkbox beside it.
 It only accepts frames that are still D3D11 textures, which has two
 consequences the app handles for you:
 
-* `hwdec=auto` settles on **d3d11va-copy** here — the frames are read
+* The default decode path is copy-back (see [GPU](#gpu)): the frames are read
   back to system RAM and the filter has nothing to work with. So the mode
-  takes over `hwdec` while it is on and hands it back when it is turned off.
-* Direct decode allocates one fixed texture array, and the 256-frame pool
-  `config/mpv.conf` asks for (which exists so reverse playback can hold a
-  whole keyframe range) blows past what D3D11 will allocate — the decoder
-  fails with *"Static surface pool size exceeded"* and silently drops to
-  software. The pool comes down to 16 while RTX is engaged.
+  takes over `hwdec` while it is on, switching to direct `d3d11va`, and hands
+  it back when it is turned off.
+* Direct decode allocates one fixed texture array, and a large pool blows
+  past what D3D11 will allocate — the decoder fails with *"Static surface
+  pool size exceeded"* and silently drops to software. The pool comes down to
+  16 while RTX is engaged.
 
 Switching `hwdec` re-initialises the decoder asynchronously, so the filter
 is parked and fired by the `hwdec-current` property rather than after a
@@ -484,9 +484,19 @@ away exactly the detail an export is meant to preserve).
 ## GPU
 
 `vo=gpu-next` + `gpu-api=d3d11` (libplacebo), a 10-bit swapchain, Windows
-HDR signalling (`target-colorspace-hint`), `hwdec=auto-safe`,
-`video-sync=display-resample`, and a 3GB demuxer cache so scrubbing large
-4K120 files doesn't stall on disk.
+HDR signalling (`target-colorspace-hint`), `video-sync=display-resample`, and
+a 3GB demuxer cache so scrubbing large 4K120 files doesn't stall on disk.
+
+Decoding is on the GPU by default, copy-back: `hwdec=d3d11va-copy,nvdec-copy,auto-copy`
+with a 32-surface pool. Direct `d3d11va` plus the 256-surface pool reverse
+playback used to ask for overflowed what D3D11 will allocate, and the decoder
+dropped silently to the CPU — an NVIDIA card showed **CPU decode** in the
+header. Copy-back has no such ceiling, works under both renderer APIs, and is
+what the colour sliders, crop and motion trail need anyway, since they filter
+frames in RAM. Reverse playback keeps working because its decoded frames sit in
+`video-reversal-buffer`, in RAM. Clip exports ask for GPU decode too. The
+header chip says which path is live (`HW d3d11va-copy` when it is working);
+ProRes and 4:4:4 H.264 still decode on the CPU, as no GPU decodes them.
 
 HDR is **off by default** — every file, HDR source included, plays back
 tone-mapped to SDR until you opt in with `Ctrl+H`, the bar's **HDR** button,

@@ -477,7 +477,9 @@ function exportTrim(opts) {
 
   const vf = clipFilters();
   if (vf.length) args.push('--vf=' + vf.join(','));
-  args.push('--ovc=libx264', '--oac=aac', '--no-config', '-o=' + outFile, src);
+  // --no-config drops mpv.conf's hwdec with everything else; the decode is
+  // most of an export's time, so the GPU is asked for it here.
+  args.push('--ovc=libx264', '--oac=aac', '--no-config', '--hwdec=auto-copy', '-o=' + outFile, src);
 
   spawn(mpv, args, { windowsHide: true, stdio: 'ignore', detached: false });
   log('Encoding clip -> ' + path.basename(outFile));
@@ -594,7 +596,7 @@ function exportRamp(o) {
 
   const outFile = exportPath(src, 'ramp', 'mp4');
   const args = [
-    '--no-config', '--no-audio',
+    '--no-config', '--no-audio', '--hwdec=auto-copy',
     '--start=' + fmt(a), '--end=' + fmt(a + p.outSeconds + 0.5 / outFps),
     '--vf=lavfi=[' + vf.join(',') + ']',
     '--ovc=libx264', '--ovcopts=crf=17', '-o=' + outFile, src,
