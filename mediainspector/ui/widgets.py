@@ -215,7 +215,7 @@ class Card(QFrame):
         self.caret = QLabel()
         self.caret.setStyleSheet("color: #7b7b87;")
         self.title = QLabel(title.upper())
-        self.title.setStyleSheet("color: inherit; font-weight: 600; letter-spacing: 1px; font-size: 10.5px;")
+        self.title.setStyleSheet("color: #9a9aa6; font-weight: 600; letter-spacing: 1px; font-size: 10.5px;")
         self.badge = QLabel()
         self.badge.setObjectName("cardBadge")
         for w in (self.caret, self.title, self.badge):

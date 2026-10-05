@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
                 w.deleteLater()
         lv = self.c.lv
         items = []
-        if lv.width:
+        if lv.width and lv.kind != "audio":     # an audio file's "size" is the spectrogram's
             w, h = self.c.display_size()
             items.append((f"{w}×{h}", "true"))
         if lv.kind == "video" and lv.fps:

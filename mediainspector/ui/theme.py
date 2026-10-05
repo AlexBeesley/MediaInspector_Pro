@@ -76,9 +76,10 @@ QPushButton {{ background: qlineargradient(y1:0, y2:1, stop:0 {CTL}, stop:1 {CTL
 QPushButton:hover {{ background: {CTL_HI}; border-color: #4a4a58; }}
 QPushButton:pressed {{ background: {CTL_LO}; }}
 QPushButton:disabled {{ color: {FAINT}; background: #15151b; border-color: #202028; }}
-QPushButton:checked, QPushButton[on="true"] {{ background: {accent}; color: {INK}; border-color: {accent}; font-weight: 600; }}
 QPushButton[key="true"] {{ background: qlineargradient(y1:0, y2:1, stop:0 #33333f, stop:1 #292933); border-color: #4d4d5c; }}
 QPushButton[key="true"]:hover {{ background: #3b3b48; }}
+/* Engaged comes after key: a primary action that is on must read as on. */
+QPushButton:checked, QPushButton[on="true"] {{ background: {accent}; color: {INK}; border-color: {accent}; font-weight: 600; }}
 QPushButton[seg="true"] {{ background: transparent; border: 0; color: {DIM}; min-height: {px(20)}; border-radius: 3px; }}
 QPushButton[seg="true"]:hover {{ background: {CTL}; color: {TEXT}; }}
 QPushButton[seg="true"]:checked {{ background: {CTL_HI}; color: {accent}; border: 1px solid {BORDER_HI}; }}

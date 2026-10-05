@@ -167,11 +167,17 @@ class VideoView(QOpenGLWidget):
             p.drawRoundedRect(QRectF(pt.x() - 5, pt.y() - 5, 10, 10), 2, 2)
         c = self.c.lv.crop_box
         text = f"{c.w} x {c.h}   {self.c.lv.crop_ratio or 'free'}"
-        p.setPen(QColor("#ffffff"))
         p.setFont(QFont(self.font().family(), 10))
-        above = box.top() - 22 > pic.top()
-        y = box.top() - 20 if above else box.top() + 4
-        p.drawText(QRectF(box.left(), y, box.width(), 16), Qt.AlignHCenter | Qt.AlignVCenter, text)
+        tw = p.fontMetrics().horizontalAdvance(text) + 14
+        above = box.top() - 24 > pic.top()
+        y = box.top() - 22 if above else box.top() + 6
+        pill = QRectF(box.center().x() - tw / 2, y, tw, 18)
+        # On its own dark pill: white text alone vanishes over a bright frame.
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 170))
+        p.drawRoundedRect(pill, 4, 4)
+        p.setPen(QColor("#ffffff"))
+        p.drawText(pill, Qt.AlignCenter, text)
 
     def _paint_spectro_scale(self, p: QPainter):
         pic, sr = self.picture_rect(), self.c.lv.samplerate

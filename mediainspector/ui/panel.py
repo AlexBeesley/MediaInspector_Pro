@@ -8,10 +8,10 @@ and flow into as many columns as the panel is wide.
 from __future__ import annotations
 
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QLabel, QLineEdit, QScrollArea, QVBoxLayout,
-                               QWidget, QHBoxLayout)
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QLabel, QLineEdit,
+                               QScrollArea, QVBoxLayout, QWidget)
 
 from ..controller import RATIOS, UPSCALE_NAMES, Controller
 from ..core import media, ramp
@@ -65,53 +65,56 @@ DSCALERS = ["mitchell", "catmull_rom", "lanczos", "spline36", "box", "bilinear"]
 
 class FlowColumns(QWidget):
     """Cards packed into as many columns as fit, each into the shortest column
-    so far - the way CSS columns pack, without a hole under every short card."""
-    COL_W = 290
+    so far - the way CSS columns pack, without a hole under every short card.
+
+    Placed by hand rather than with nested box layouts: a row shown inside a
+    card has to re-pack the columns, and nested layouts did not reliably hear
+    about it, leaving the card crushed."""
+    COL_W = 320          # a card's comfortable width; narrower and its rows wrap badly
+    GAP = 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.cards: list[Card] = []
-        self.grid = QHBoxLayout(self)
-        self.grid.setContentsMargins(8, 8, 8, 8)
-        self.grid.setSpacing(8)
-        self.cols: list[QVBoxLayout] = []
-        self._n = 0
-        self._again = QTimer(self, interval=0, singleShot=True, timeout=self.reflow)
+        self._placing = False
 
     def add(self, card: Card):
+        card.setParent(self)
         self.cards.append(card)
-        card.toggled.connect(lambda *_: self._again.start())
+        card.toggled.connect(lambda *_: self.reflow())
+
+    def columns(self) -> int:
+        return max(1, (self.width() - self.GAP) // self.COL_W)
+
+    def event(self, e):
+        # A card asking for a new size (a row shown, a fold) lands here.
+        if e.type() == QEvent.LayoutRequest:
+            self.reflow()
+        return super().event(e)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        n = max(1, (self.width() - 8) // self.COL_W)
-        if n != self._n:
-            self._again.start()
+        self.reflow()
 
     def reflow(self):
-        n = max(1, (self.width() - 8) // self.COL_W)
-        self._n = n
-        for col in self.cols:
-            while col.count():
-                col.takeAt(0)
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            if item.layout():
-                item.layout().deleteLater()
-        self.cols = []
-        heights = [0] * n
-        for _ in range(n):
-            col = QVBoxLayout()
-            col.setSpacing(8)
-            col.setAlignment(Qt.AlignTop)
-            self.cols.append(col)
-            self.grid.addLayout(col, 1)
-        for card in self.cards:
-            i = heights.index(min(heights))
-            self.cols[i].addWidget(card)
-            heights[i] += card.sizeHint().height() + 8
-        for col in self.cols:
-            col.addStretch(1)
+        if self._placing:
+            return
+        self._placing = True
+        try:
+            n, g = self.columns(), self.GAP
+            w = max(1, (self.width() - g * (n + 1)) // n)
+            ys = [g] * n
+            for card in self.cards:
+                lay = card.layout()
+                h = lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else card.sizeHint().height()
+                h = max(h, card.minimumSizeHint().height())
+                i = ys.index(min(ys))
+                card.setGeometry(g + i * (w + g), ys[i], w, h)
+                card.show()
+                ys[i] += h + g
+            self.setMinimumHeight(max(ys))
+        finally:
+            self._placing = False
 
 
 class Panel(QScrollArea):
@@ -121,6 +124,8 @@ class Panel(QScrollArea):
         self.setObjectName("panel")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Arrow keys step files; a focused scroll area would eat them.
+        self.setFocusPolicy(Qt.NoFocus)
         self.flow = FlowColumns()
         self.flow.setObjectName("panel")
         self.setWidget(self.flow)
