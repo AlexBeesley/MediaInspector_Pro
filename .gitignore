@@ -1,12 +1,8 @@
-# Session state, crash logs and layout dumps - all regenerated at runtime.
-state_*
-
-Exports/*
-!Exports/.gitkeep
-
-# Build output. The sources in app/ are what is tracked; the packaged build is
-# ~300MB of bundled Chromium, rebuilt with `npm run build` in app/.
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+build/out/
 dist/
-*.pdb
-
-config/render.conf
+vendor/
+*.spec.bak
