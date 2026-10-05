@@ -19,6 +19,9 @@ const MpvIpc = require('./mpv-ipc');
 const native = require('./native');
 const { Player, findMpv, PIPE_NAME } = require('./player');
 const { State, lastFileFrom } = require('./state');
+const { XRay } = require('./xray');
+const motion = require('./motion');
+const ramp = require('./ramp');
 
 // Where the project lives: config/, Exports/ and the player's own state file.
 // In development that is the parent of app/. Packaged, the exe sits in dist/MediaInspector_Pro-win32-x64/, so the
@@ -59,6 +62,7 @@ const EXPORT_DIR = path.join(ROOT, 'Exports');
 const state = new State(path.join(ROOT, 'state_panel.json'));
 const ipc = new MpvIpc(PIPE_NAME);
 const player = new Player(CONFIG_DIR);
+const xray = new XRay(findMpv);
 
 let win = null;
 let videoWin = null;
@@ -79,6 +83,8 @@ const WATCH = [
   'user-data/mi/tier', 'user-data/mi/kind', 'user-data/mi/crop',
   'user-data/mi/crop_editing', 'user-data/mi/crop_ratio',
   'user-data/mi/set_browse_all', 'user-data/mi/ui_scale',
+  'user-data/mi/loaded_seq', 'user-data/mi/spec_live', 'user-data/mi/set_spectrogram',
+  'user-data/mi/set_trail', 'user-data/mi/trail_live', 'user-data/mi/ramp_on',
 ];
 
 // ---------------------------------------------------------------- windows
@@ -284,6 +290,7 @@ ipc.on('disconnect', () => {
 let sendTimer = null;
 ipc.on('property', (name) => {
   if (name === 'dwidth' || name === 'dheight' || name === 'video-params/rotate') fitWindowToMedia();
+  if (name === 'user-data/mi/loaded_seq') onFileLoaded();
   if (sendTimer) return;
   sendTimer = setTimeout(() => {
     sendTimer = null;
@@ -355,6 +362,8 @@ function pushAllSettings() {
   ipc.set('scale', s.scaler);
   ipc.set('cscale', s.scaler);
   ipc.set('dscale', s.dscaler);
+  ipc.setting('spectrogram', s.spectrogram ? 'yes' : 'no');
+  ipc.setting('trail_length', s.trailLength);
   pushUpscale();
   applyLook(s.look || {});
 }
@@ -429,33 +438,172 @@ function readGpuName() {
     });
 }
 
+// The crop on the picture, as mpv's filter wants it, or null.
+function liveCrop() {
+  const crop = ipc.props['user-data/mi/crop'];
+  return crop && crop.split(':').length === 4 ? crop : null;
+}
+
+// What every clip export does to the frame: the live crop, then the export
+// scale through the chosen resampler.
+function clipFilters() {
+  const vf = [];
+  const crop = liveCrop();
+  if (crop) vf.push('crop=' + crop);
+  const sc = parseInt(state.get('exportScale'), 10);
+  if (sc && sc !== 100 && sc > 0) {
+    const f = fmt(sc / 100);
+    vf.push('scale=w=iw*' + f + ':h=ih*' + f + ':flags=' + state.get('exportScaler') + '+accurate_rnd');
+  }
+  return vf;
+}
+
+function exportPath(src, tag, ext) {
+  const outDir = state.get('exportDir') || EXPORT_DIR;
+  fs.mkdirSync(outDir, { recursive: true });
+  const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+  return path.join(outDir, path.parse(src).name + '_' + tag + '_' + stamp + '.' + ext);
+}
+
 function exportTrim(opts) {
   const src = ipc.props['path'];
   if (!src) { log('Nothing loaded to trim'); return; }
   const mpv = findMpv();
   if (!mpv) { log('mpv.exe not found'); return; }
 
-  const outDir = state.get('exportDir') || EXPORT_DIR;
-  fs.mkdirSync(outDir, { recursive: true });
-  const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
-  const outFile = path.join(outDir, path.parse(src).name + '_trim_' + stamp + '.mp4');
-
+  const outFile = exportPath(src, 'trim', 'mp4');
   const args = ['--start=' + (opts.trimIn || '0')];
   if (opts.trimOut) args.push('--end=' + opts.trimOut);
 
-  const vf = [];
-  const crop = ipc.props['user-data/mi/crop'];
-  if (crop && crop.split(':').length === 4) vf.push('crop=' + crop);
-  const sc = parseInt(state.get('exportScale'), 10);
-  if (sc && sc !== 100 && sc > 0) {
-    const f = fmt(sc / 100);
-    vf.push('scale=w=iw*' + f + ':h=ih*' + f + ':flags=' + state.get('exportScaler') + '+accurate_rnd');
-  }
+  const vf = clipFilters();
   if (vf.length) args.push('--vf=' + vf.join(','));
   args.push('--ovc=libx264', '--oac=aac', '--no-config', '-o=' + outFile, src);
 
   spawn(mpv, args, { windowsHide: true, stdio: 'ignore', detached: false });
   log('Encoding clip -> ' + path.basename(outFile));
+}
+
+// ---------------------------------------------------------------- X-ray
+
+// Audio files are analysed as they open; a video's soundtrack only on request,
+// since decoding the whole of a long clip's audio is not free.
+let xrayFor = null;
+
+function onFileLoaded() {
+  xray.cancel();
+  xrayFor = null;
+  send('xray', { state: 'idle' });
+  if (ipc.props['user-data/mi/kind'] === 'audio') runXray();
+}
+
+async function runXray() {
+  const src = ipc.props['path'];
+  if (!src) return;
+  xrayFor = src;
+  send('xray', { state: 'running', path: src });
+  try {
+    const codec = await ipc.get('audio-codec-name').catch(() => '');
+    const r = await xray.run(src, codec);
+    if (!r || xrayFor !== src) return;
+    // A number, not userData()'s string: the script reads it with
+    // get_property_number, which cannot convert a string node.
+    ipc.set('user-data/mi/xray_cutoff', Math.round(r.cutoffHz || 0));
+    send('xray', { state: 'done', path: src, result: r });
+  } catch (e) {
+    if (xrayFor === src) send('xray', { state: 'error', path: src, error: e.message });
+  }
+}
+
+// ---------------------------------------------------------------- motion
+
+// The decoded source, as the motion tools need to describe it to mpv: the
+// size before rotation (or the crop's), the rotation, and the frame rate.
+function sourceInfo() {
+  const crop = liveCrop();
+  const [cw, ch] = crop ? crop.split(':').map(Number) : [ipc.props['width'], ipc.props['height']];
+  return {
+    src: { w: cw || 1920, h: ch || 1080 },
+    rotate: ipc.props['video-params/rotate'] || 0,
+    crop,
+    fps: ipc.props['container-fps'] || 30,
+  };
+}
+
+let motionBusy = false;
+
+async function motionProfile(range) {
+  const src = ipc.props['path'];
+  const mpv = findMpv();
+  if (!src || !mpv) return null;
+  const info = sourceInfo();
+  const p = await motion.profile(mpv, src, { ...info, start: range.a, end: range.b });
+  return { path: src, t: Array.from(p.t), e: Array.from(p.e), peak: p.peak };
+}
+
+async function exportTimeslice(o) {
+  const src = ipc.props['path'];
+  const mpv = findMpv();
+  if (!src || !mpv) { log('Nothing loaded'); return null; }
+  if (motionBusy) { log('Already rendering - one at a time'); return null; }
+  motionBusy = true;
+  log('Rendering time-slice still…');
+  try {
+    const r = await motion.timeslice(mpv, src, {
+      ...sourceInfo(),
+      start: o.a, end: o.b,
+      copies: o.copies, threshold: o.threshold, fade: o.fade,
+      maxSide: o.maxSide || 2560,
+    });
+    const { nativeImage } = require('electron');
+    const img = nativeImage.createFromBitmap(motion.rgbToBgra(r.rgb, r.w, r.h), { width: r.w, height: r.h });
+    const out = exportPath(src, 'timeslice', 'png');
+    fs.writeFileSync(out, img.toPNG());
+    log(`Time-slice saved: ${path.basename(out)}  (${r.copies} copies, ${r.w}x${r.h})`);
+    return out;
+  } catch (e) {
+    log('Time-slice failed: ' + e.message);
+    return null;
+  } finally {
+    motionBusy = false;
+  }
+}
+
+// ---------------------------------------------------------------- ramp
+
+// 60 fps out of anything that has the frames for it; a slower source keeps
+// its own rate rather than having every frame doubled.
+function rampFps() {
+  const srcFps = ipc.props['container-fps'] || 30;
+  return srcFps >= 59 ? 60 : Math.round(srcFps * 1000) / 1000;
+}
+
+function exportRamp(o) {
+  const src = ipc.props['path'];
+  const mpv = findMpv();
+  if (!src || !mpv) { log('Nothing loaded'); return; }
+  const pts = ramp.normalise(o.pts);
+  if (!pts.length) { log('Draw a speed curve first'); return; }
+  const a = Math.max(0, Number(o.a) || 0);
+  const b = Number(o.b);
+  if (!(b > a)) { log('The ramp export range is empty'); return; }
+
+  const outFps = rampFps();
+  const p = ramp.plan(pts, a, b);
+  const vf = clipFilters();
+  vf.push("setpts='" + p.expr + "'", 'fps=' + outFps);
+
+  const outFile = exportPath(src, 'ramp', 'mp4');
+  const args = [
+    '--no-config', '--no-audio',
+    '--start=' + fmt(a), '--end=' + fmt(a + p.outSeconds + 0.5 / outFps),
+    '--vf=lavfi=[' + vf.join(',') + ']',
+    '--ovc=libx264', '--ovcopts=crf=17', '-o=' + outFile, src,
+  ];
+  const proc = spawn(mpv, args, { windowsHide: true, stdio: 'ignore', detached: false });
+  log(`Encoding ramp (${p.outSeconds.toFixed(1)}s at ${outFps} fps) -> ${path.basename(outFile)}`);
+  proc.on('exit', (code) => {
+    log(code === 0 ? 'Ramp saved: ' + path.basename(outFile) : 'Ramp export failed (mpv exit ' + code + ')');
+  });
 }
 
 // gpu-api cannot change on a running player, so the player is restarted in
@@ -572,6 +720,32 @@ ipcMain.handle('invoke', async (e, name, payload) => {
       exportTrim(payload || {});
       return true;
 
+    case 'xray':
+      runXray();
+      return true;
+
+    case 'motion-profile':
+      try {
+        return await motionProfile(payload || {});
+      } catch (e) {
+        log('Motion analysis failed: ' + e.message);
+        return null;
+      }
+
+    case 'timeslice':
+      return exportTimeslice(payload || {});
+
+    case 'ramp-export':
+      exportRamp(payload || {});
+      return true;
+
+    case 'ramp-plan': {
+      const o = payload || {};
+      const pts = ramp.normalise(o.pts);
+      if (!pts.length || !(o.b > o.a)) return null;
+      return { outSeconds: ramp.plan(pts, o.a, o.b).outSeconds, fps: rampFps() };
+    }
+
     case 'render-api':
       state.set('renderApi', payload);
       await applyRenderApi(payload);
@@ -627,6 +801,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', async (e) => {
     ipc.stopRetry();
+    xray.cancel();
     if (player.alive) {
       e.preventDefault();
       state.save();

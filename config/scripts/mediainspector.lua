@@ -220,6 +220,11 @@ local ui = { buttons = {}, seekbar = nil, speedbar = nil, zoombar = nil, osd_w =
 -- browse scope both live above the drawing code and have to ask for a redraw.
 local render
 
+-- The live spectrogram, the motion trail and the speed ramp hang off one
+-- table, for the same reason cropui does: the main chunk is close to Lua's
+-- 200-local limit. Filled in below the drawing helpers.
+local fx = { spec = {}, trail = {}, ramp = { pts = {} } }
+
 -- Scale is driven by window HEIGHT, not width: a portrait clip fills a tall
 -- narrow window, where width-based scaling would shrink the UI to nothing
 -- exactly when the window is physically large.
@@ -1586,6 +1591,7 @@ local SHORTCUTS = {
     { "Enter / Esc  (adjusting)", "Apply the crop / cancel" },
     { "Drag (crop on)", "Move the full frame inside the crop" },
     { "Alt+Arrows", "Nudge crop position" },
+    { "t", "Motion trail: bright / dark / X-ray / off" },
 }
 
 local function kind_tier()
@@ -1777,6 +1783,248 @@ local function draw_audio_face(ass, w, h, S, top, bottom)
     if album then text(ass, w / 2, cy + 36 * S, 5, 13 * S, COL_DIM, album) end
 end
 
+-- ============================================================
+-- Live spectrogram (audio)
+--   The audio is split inside mpv: one copy goes to the speakers, the
+--   other through showspectrum to become the picture. Linear in frequency,
+--   low at the bottom, so the kHz scale drawn over it is a straight
+--   proportion and an encoder's low-pass shows up as a hard ceiling.
+-- ============================================================
+
+function fx.spec_graph(aid)
+    return string.format("[aid%d]asplit[ao][s];[s]showspectrum=s=1280x720:mode=combined"
+        .. ":slide=scroll:scale=log:fscale=lin:color=magma:overlap=0.75:fps=60:legend=0[vo]", aid)
+end
+
+function fx.spec_apply(quiet)
+    local s = fx.spec
+    local want = setting_bool("spectrogram", false) and is_audio()
+    if want and not s.engaged then
+        local at = mp.get_property_native("current-tracks/audio")
+        if not at or not at.id then return end
+        local vt = mp.get_property_native("current-tracks/video")
+        s.aid, s.vid = at.id, vt and vt.id or nil
+        s.engaged, s.touched = true, true
+        mp.set_property("lavfi-complex", fx.spec_graph(at.id))
+        if not quiet then emit("Live spectrogram ON", 1.2) end
+    elseif not want and s.engaged then
+        -- Clearing the graph leaves no audio track selected, and "auto" does
+        -- not reselect one mid-file, so the tracks it took are handed back by
+        -- number. on_load below puts them back to auto for the next file.
+        s.engaged = false
+        mp.set_property("lavfi-complex", "")
+        if s.aid then mp.set_property("aid", tostring(s.aid)) end
+        if s.vid then mp.set_property("vid", tostring(s.vid)) end
+        if not quiet then emit("Live spectrogram off", 1.2) end
+    end
+    mp.set_property_bool("user-data/mi/spec_live", s.engaged)
+    render()
+end
+
+-- kHz gridlines over the picture, and the analysed cutoff when the panel's
+-- X-ray found one: a ceiling you can see the spectrogram run into.
+function fx.draw_spec(ass, S)
+    local x0, y0, x1, y1 = cropui.video_rect()
+    local sr = mp.get_property_number("audio-params/samplerate")
+    if not x0 or not sr or sr <= 0 then return end
+    local nyq = sr / 2
+    local step = nyq <= 12000 and 2000 or (nyq <= 30000 and 5000 or 10000)
+    local f = step
+    while f < nyq - step * 0.3 do
+        local y = y1 - (f / nyq) * (y1 - y0)
+        rect(ass, x0, y - 0.5 * S, x1, y + 0.5 * S, "&HFFFFFF&", "&HC8&")
+        text(ass, x0 + 6 * S, y - 2 * S, 1, 11 * S, COL_TEXT, string.format("%gk", f / 1000))
+        f = f + step
+    end
+    local cut = mp.get_property_number("user-data/mi/xray_cutoff") or 0
+    if cut > 0 and cut < nyq then
+        local y = y1 - (cut / nyq) * (y1 - y0)
+        rect(ass, x0, y - 1 * S, x1, y + 1 * S, COL_HDR, "&H30&")
+        text(ass, x1 - 8 * S, y - 3 * S, 3, 12 * S, COL_HDR,
+            string.format("cutoff %.1f kHz", cut / 1000))
+    end
+end
+
+-- ============================================================
+-- Motion trail (video)
+--   bright: lagfun holds each pixel's brightest recent value and lets it
+--           fade, so light subjects smear a trail behind them.
+--   dark:   the same through a negative, for dark subjects on light.
+--   xray:   the difference between consecutive frames, amplified - the
+--           still parts of the frame go black and only motion is lit.
+--   Software filters, so they stand down while RTX owns the decoder.
+-- ============================================================
+
+fx.TRAIL_LABEL = "mitrail"
+fx.TRAIL_ORDER = { "off", "bright", "dark", "xray" }
+fx.TRAIL_SAY = {
+    off = "Motion trail off",
+    bright = "Motion trail ON - light subjects leave a trail",
+    dark = "Motion trail ON - dark subjects leave a trail",
+    xray = "Motion X-ray ON - only what moves is lit",
+}
+
+-- Length 0..100 is one control for both: how long a trail lasts (lagfun's
+-- per-frame decay, 0.9 to 0.999) or how hard X-ray amplifies (the input
+-- ceiling the difference is stretched from).
+function fx.trail_graph(mode, len)
+    local L = clamp(len or 50, 0, 100)
+    if mode == "xray" then
+        local g = string.format("%.3f", 0.5 - 0.46 * L / 100)
+        return "tblend=all_mode=difference,colorlevels=rimax=" .. g .. ":gimax=" .. g .. ":bimax=" .. g
+    end
+    local decay = string.format("%.4f", 1 - 10 ^ -(1 + L / 50))
+    if mode == "dark" then return "negate,lagfun=decay=" .. decay .. ",negate" end
+    return "lagfun=decay=" .. decay
+end
+
+-- Says something only when what is on screen changes: the observers below
+-- call this at startup and whenever the upscaler moves, and a toast that
+-- repeats the state already showing is noise.
+function fx.trail_apply(quiet)
+    local mode = setting("trail", "off")
+    local was = fx.trail.live and fx.trail.mode or "off"
+    if filter_present(fx.TRAIL_LABEL) then
+        mp.commandv("vf", "remove", "@" .. fx.TRAIL_LABEL)
+    end
+    fx.trail.live, fx.trail.mode = false, mode
+    local say = nil
+    if mode ~= "off" and is_video() then
+        if setting("upscale", "off") == "rtx" then
+            say = "Motion trail needs software frames - it is paused while RTX upscaling is on"
+        elseif mp.commandv("vf", "add", "@" .. fx.TRAIL_LABEL .. ":lavfi=["
+                .. fx.trail_graph(mode, setting_num("trail_length", 50)) .. "]") then
+            fx.trail.live = true
+            say = fx.TRAIL_SAY[mode]
+        else
+            say = "The player rejected the trail filter"
+        end
+    else
+        say = fx.TRAIL_SAY.off
+    end
+    local now = fx.trail.live and mode or "off"
+    if not quiet and say and (now ~= was or (mode ~= "off" and not fx.trail.live)) then emit(say, 2) end
+    mp.set_property_bool("user-data/mi/trail_live", fx.trail.live)
+    render()
+end
+
+function fx.trail_cycle()
+    if not is_video() then
+        emit("Motion trail applies to video only", 1.5)
+        return
+    end
+    local cur, idx = setting("trail", "off"), 1
+    for i, m in ipairs(fx.TRAIL_ORDER) do if m == cur then idx = i end end
+    mp.set_property("user-data/mi/set_trail", fx.TRAIL_ORDER[(idx % #fx.TRAIL_ORDER) + 1])
+end
+
+-- ============================================================
+-- Speed ramp (video)
+--   A curve of speed over the clip, drawn in the control panel. While it
+--   plays, the playhead's position decides the speed. The curve eases
+--   between points in log-speed - 1x to 0.25x passes 0.5x halfway, which is
+--   what "halfway" looks like - and holds flat outside them. app/ramp.js
+--   evaluates the same curve for the export, so the two must stay in step.
+-- ============================================================
+
+function fx.ramp_eval(t)
+    local p = fx.ramp.pts
+    local n = #p
+    if n == 0 then return nil end
+    if t <= p[1][1] then return p[1][2] end
+    if t >= p[n][1] then return p[n][2] end
+    for i = 1, n - 1 do
+        local a, b = p[i], p[i + 1]
+        if t < b[1] then
+            local u = (t - a[1]) / math.max(1e-6, b[1] - a[1])
+            u = u * u * (3 - 2 * u)
+            return math.exp(math.log(a[2]) + (math.log(b[2]) - math.log(a[2])) * u)
+        end
+    end
+    return p[n][2]
+end
+
+function fx.ramp_publish()
+    mp.set_property_bool("user-data/mi/ramp_on", fx.ramp.on)
+    render()
+end
+
+-- The speeds the ramp itself set most recently. A speed change that is none
+-- of these came from somewhere else - the shuttle, a preset, the wheel - and
+-- a hand on the speed control outranks the curve.
+function fx.ramp_mine(sp)
+    for _, v in ipairs(fx.ramp.recent or {}) do
+        if math.abs(v - sp) < 0.01 then return true end
+    end
+    return false
+end
+
+function fx.ramp_tick(_, t)
+    local r = fx.ramp
+    if not r.on or not t or #r.pts == 0 then return end
+    if ui.dragging_speed or mp.get_property_bool("pause") then return end
+    if mp.get_property("play-direction") == "backward" then return end
+    local cur = mp.get_property_number("speed") or 1
+    -- Checked here as well as in the speed observer: observers deliver the
+    -- latest value, so a hand-set speed could be overwritten by this tick
+    -- before the observer ever saw it.
+    if r.recent and #r.recent > 0 and not fx.ramp_mine(cur) then
+        fx.ramp_set_on(false, true)
+        emit("Speed ramp off - the speed was changed by hand", 2)
+        return
+    end
+    local sp = fx.ramp_eval(t)
+    if not sp or math.abs(sp - cur) < 0.004 then return end
+    r.recent = r.recent or {}
+    table.insert(r.recent, sp)
+    while #r.recent > 4 do table.remove(r.recent, 1) end
+    mp.set_property_number("speed", sp)
+end
+
+function fx.ramp_set_on(on, quiet)
+    local r = fx.ramp
+    on = on and #r.pts > 0 and is_video()
+    if on == r.on then fx.ramp_publish() return end
+    r.on, r.recent = on, {}
+    if on then
+        fx.ramp_tick(nil, mp.get_property_number("time-pos"))
+        if not quiet then emit("Speed ramp ON - playback follows the curve", 1.8) end
+    elseif not quiet then
+        -- Switched off from the panel: back to real time. Overridden by a
+        -- hand on the speed (quiet), the speed it was set to stands.
+        mp.set_property_number("speed", 1.0)
+        emit("Speed ramp off", 1.2)
+    end
+    fx.ramp_publish()
+end
+
+-- Points arrive from the panel as JSON [[t, speed], ...] in seconds.
+function fx.ramp_set_points(json)
+    local pts = {}
+    for _, p in ipairs(utils.parse_json(json or "") or {}) do
+        local t, s = tonumber(p[1]), tonumber(p[2])
+        if t and s and s > 0 then pts[#pts + 1] = { t, clamp(s, 0.05, 8) } end
+    end
+    table.sort(pts, function(a, b) return a[1] < b[1] end)
+    fx.ramp.pts = pts
+    if #pts == 0 and fx.ramp.on then
+        fx.ramp_set_on(false)
+    elseif fx.ramp.on then
+        fx.ramp_tick(nil, mp.get_property_number("time-pos"))
+    end
+    fx.ramp_publish()
+end
+
+-- Where the ramp's points sit on the timeline: small ticks above the track,
+-- lit while the ramp is driving playback.
+function fx.draw_ramp_ticks(ass, x0, x1, cy, S, dur)
+    local col = fx.ramp.on and COL_ACCENT or COL_DIM
+    for _, p in ipairs(fx.ramp.pts) do
+        local x = x0 + (x1 - x0) * clamp(p[1] / dur, 0, 1)
+        rect(ass, x - 1 * S, cy - 10 * S, x + 1 * S, cy - 4 * S, col, "&H00&")
+    end
+end
+
 local function upscale_label()
     local m = setting("upscale", "off")
     if m == "rtx" then return "RTX", true end
@@ -1847,7 +2095,11 @@ render = function()
     round_rect(ass, dock_pad + R_CARD * S, dock_y, w - dock_pad - R_CARD * S, dock_y + 1 * S,
         0, "&HFFFFFF&", "&HE0&")
 
-    if is_audio() then draw_audio_face(ass, w, h, S, status_h, sub_y0) end
+    if fx.spec.engaged then
+        fx.draw_spec(ass, S)
+    elseif is_audio() then
+        draw_audio_face(ass, w, h, S, status_h, sub_y0)
+    end
     if crop.editing then cropui.draw(ass, S) end
 
     local dur = mp.get_property_number("duration") or 0
@@ -1987,6 +2239,7 @@ render = function()
         ui.seekbar = nil
     else
         round_rect(ass, sub_x0, sub_cy - trk / 2, sub_x1, sub_cy + trk / 2, trk / 2, COL_TRACK, "&H10&")
+        if dur > 0 and #fx.ramp.pts > 0 then fx.draw_ramp_ticks(ass, sub_x0, sub_x1, sub_cy, S, dur) end
         if dur > 0 then
             -- How far the demuxer has read ahead, behind the played part: on a
             -- slow source it says whether a scrub will land instantly.
@@ -2023,6 +2276,7 @@ render = function()
     else
         local cur_speed_val = mp.get_property_number("speed") or 1.0
         local pb_fps = (source_fps or 0) * cur_speed_val
+        up_tag = up_tag .. (fx.ramp.on and "RAMP   |   " or "") .. (fx.trail.live and "TRAIL   |   " or "")
         local mode = slowmo_active
             and string.format("SLOW-MO %.0f>%gfps   |   Playback: %.0f fps", source_fps or 0, target_fps(), pb_fps)
             or string.format("%.0f fps   |   Playback: %.0f fps", source_fps or 0, pb_fps)
@@ -2305,6 +2559,23 @@ local function try_fit()
     end
 end
 
+-- The spectrogram graph, the tracks it took over and the ramp all belong to
+-- one file. on_load runs before the next file picks its tracks, which is the
+-- only point a cleared lavfi-complex can hand them back to "auto".
+mp.add_hook("on_load", 50, function()
+    local s = fx.spec
+    if s.engaged then mp.set_property("lavfi-complex", "") end
+    if s.touched then
+        mp.set_property("aid", "auto")
+        mp.set_property("vid", "auto")
+    end
+    s.engaged, s.touched, s.aid, s.vid = false, false, nil, nil
+    mp.set_property_bool("user-data/mi/spec_live", false)
+    mp.set_property_number("user-data/mi/xray_cutoff", 0)
+    fx.ramp.pts, fx.ramp.on = {}, false
+    fx.ramp_publish()
+end)
+
 mp.register_event("file-loaded", function()
     reset_seek_pacing()
     local kind = refresh_media()
@@ -2343,6 +2614,8 @@ mp.register_event("file-loaded", function()
     fit_tries = 0
     try_fit()
     apply_upscale(true)
+    fx.trail_apply(true)
+    fx.spec_apply(true)
 
     if kind == "photo" then
         emit(string.format("%s  -  %dx%d %s", mp.get_property("filename") or "",
@@ -2355,6 +2628,10 @@ mp.register_event("file-loaded", function()
     end
 
     save_state()
+    -- Tells the shell a file has finished loading and its kind is settled:
+    -- the kind alone does not change between two audio files in a row.
+    fx.seq = (fx.seq or 0) + 1
+    mp.set_property_number("user-data/mi/loaded_seq", fx.seq)
     render()
 end)
 
@@ -2427,6 +2704,25 @@ mp.add_key_binding(nil, "fit_window", refit_window)
 mp.add_key_binding(nil, "show_info", show_info)
 mp.add_key_binding(nil, "upscale_cycle", upscale_cycle)
 mp.add_key_binding(nil, "apply_upscale", function() apply_upscale(false) end)
+mp.add_key_binding(nil, "trail_cycle", fx.trail_cycle)
+
+mp.register_script_message("mi-ramp", fx.ramp_set_points)
+mp.register_script_message("mi-ramp-on", function(v) fx.ramp_set_on(v == "yes") end)
+mp.observe_property("time-pos", "number", fx.ramp_tick)
+mp.observe_property("speed", "number", function(_, sp)
+    if fx.ramp.on and sp and not fx.ramp_mine(sp) then
+        fx.ramp_set_on(false, true)
+        emit("Speed ramp off - the speed was changed by hand", 2)
+    end
+end)
+mp.observe_property("user-data/mi/set_spectrogram", "native", function() fx.spec_apply(false) end)
+mp.observe_property("user-data/mi/set_trail", "native", function() fx.trail_apply(false) end)
+mp.observe_property("user-data/mi/set_trail_length", "native", function() fx.trail_apply(true) end)
+-- RTX takes the decoder away from software filters, and gives it back.
+mp.observe_property("user-data/mi/set_upscale", "native", function()
+    if setting("trail", "off") ~= "off" and is_video() then fx.trail_apply(false) end
+end)
+mp.observe_property("user-data/mi/xray_cutoff", "native", function() render() end)
 mp.add_key_binding("Alt+LEFT", "crop_nudge_left", function() crop_nudge(-8, 0) end, { repeatable = true })
 mp.add_key_binding("Alt+RIGHT", "crop_nudge_right", function() crop_nudge(8, 0) end, { repeatable = true })
 mp.add_key_binding("Alt+UP", "crop_nudge_up", function() crop_nudge(0, -8) end, { repeatable = true })

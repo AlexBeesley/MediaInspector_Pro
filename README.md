@@ -146,6 +146,7 @@ it, so the image is letterboxed slightly instead of being overlaid.
 | `z` / `x` | Zoom to fit / zoom to 1:1 actual pixels |
 | `r` / `Shift+R` | Rotate right / left |
 | `w` | Refit the window to the media |
+| `t` | Motion trail: bright → dark → X-ray → off |
 | `Ctrl+H` | Toggle HDR (force SDR tone-map / allow HDR passthrough) |
 | `Ctrl+A` | Sound settings |
 | `9` / `0`, `m`, `a` | Volume, mute, audio track |
@@ -316,11 +317,98 @@ numbers into them moves the box. Once applied, dragging the picture still
 slides the frame inside the crop, and Alt+Arrows nudge it — both work on the
 box while it is open too.
 
+## Audio X-ray
+
+Every audio file is analysed as it opens: the panel's **Audio X-ray** card
+shows the whole file as a spectrogram (time across, frequency up, click to
+jump) and gives a verdict on what the file really is. A video's soundtrack is
+analysed on request with **Analyse**.
+
+The verdict is about the top of the spectrum, because that is where lossy
+encoders leave their fingerprint. LAME at 128 kbps low-passes at about 16–17
+kHz, and the cut is a brick wall — around 60 dB gone in a few hundred hertz.
+Decoding that MP3 and saving it as FLAC keeps the wall, so a cliff inside a
+lossless container means an upconvert, and the frequency it sits at says
+roughly what bitrate it came from. Real recordings roll off gradually, if at
+all. A hi-res file (88.2 kHz and up) whose content stops just past 22–24 kHz
+is flagged as upsampled from CD-rate audio.
+
+Measured on generated sources: genuine 44.1 and 96 kHz FLAC read as lossless;
+MP3s at 128 and 192 kbps re-saved as FLAC read as upconverts with cutoffs at
+16.6 and 18.7 kHz; a 44.1 kHz file resampled to 96 kHz reads as upsampled; a
+recording low-passed gently at 6 kHz does *not* trip it.
+
+It is a strong hint rather than proof — a master can be band-limited on
+purpose — and the card says "probably" for that reason. The audio is decoded
+by mpv itself (encode mode, to a temporary mono WAV) and analysed in
+`app/xray.js`, so there is still nothing to install but mpv. Long files are
+read for their first 30 minutes.
+
+**Live spectrogram** (a toggle on the same card) replaces cover art with a
+scrolling spectrogram for audio files: mpv splits the audio inside
+`lavfi-complex`, one copy to the speakers and one through `showspectrum` to
+become the picture. The bar draws a kHz scale over it, and the cutoff the
+analysis found as a line the spectrogram visibly runs into.
+
+## Speed ramp
+
+The **Speed ramp** card is a graph of speed over the clip: click to add a
+point, drag to shape it, double-click to remove one. The curve eases between
+points in log-speed (1× to 0.25× passes 0.5× halfway) and holds flat outside
+them. Points sit on the bar's timeline as ticks.
+
+* **Play the ramp** makes playback follow the curve. Touching the speed by
+  hand — the shuttle, a preset, the wheel, Slow-mo — hands control back and
+  switches the ramp off.
+* The dashed **24 fps** line is the slowest speed that still shows 24 real
+  frames a second for this clip's frame rate (0.2× on 120fps footage). Below
+  it frames start to repeat.
+* **Dip here** eases down to that speed around the playhead and back up.
+  **Snap to action** finds the moment with the most movement first (mean
+  frame-to-frame difference over a small grey copy of the clip, drawn faintly
+  behind the curve) and puts the dip there. It searches the whole of a clip
+  up to 40 s long, and the 30 s around the playhead in a longer one, because
+  every frame it searches has to be decoded.
+* **Export ramp** renders it to `Exports/` at 60 fps (a slower source keeps its
+  own rate), video only. The range is the Trim card's In/Out if Out is set,
+  otherwise the curve plus a second either side.
+
+The export retimes the source with one `setpts` expression. Each slice of the
+range adds `clip(T - start, 0, length) / speed` to the output clock, so there
+is no nesting however many slices the eased parts need. mpv applies
+`--start`/`--end` to the timestamps coming *out* of the filters, which is why
+the ramped clock starts at the range's start rather than at zero.
+`app/ramp.js`, the Lua script and the panel each evaluate the same curve, and
+have to agree.
+
+## Motion trail
+
+`t`, or the **Motion trail** card, puts a live effect on the picture:
+
+| Mode | What it shows | Filter |
+|---|---|---|
+| Bright | Light subjects leave a fading trail | `lagfun` |
+| Dark | The same for dark subjects on light | `negate,lagfun,negate` |
+| X-ray | Only what moves; anything still goes black | `tblend=difference` + levels |
+
+**Length** sets how long a trail lasts, or how hard X-ray amplifies. These are
+software filters, so they stand down while RTX upscaling owns the decoder and
+come back when it lets go.
+
+**Render still** makes a time-slice photo (a chronophotograph): the subject at
+evenly spaced moments, laid over one clean background. The background is the
+per-pixel median over the range, which the moving subject never wins, and each
+copy is cut out where it differs from that plate — so it needs a still camera.
+Copies, the difference threshold and whether early copies fade are on the
+card. The range is the Trim card's In/Out, or the 3 seconds from the playhead.
+Frames come from mpv in encode mode; the compositing is `app/motion.js`.
+
 ## Controls
 
 Every control is a card in the grid beside the picture: transport, media,
-view, crop, audio, playback options, the colour sliders, GPU upscaling, trim,
-window and export settings, and the shortcut list. Every card but the
+view, crop, audio, audio X-ray, playback options, the colour sliders, GPU
+upscaling, trim, speed ramp, motion trail, window and export settings, and the
+shortcut list. Every card but the
 transport folds, and remembers whether it was folded, because ten of them do
 not fit on a screen and the ones a given job needs are never all of them.
 
@@ -423,9 +511,12 @@ MediaInspector_Pro/
 │   ├── mpv-ipc.js           mpv JSON IPC over a named pipe
 │   ├── native.js            the few Win32 calls embedding needs
 │   ├── state.js             saved panel state
-│   └── renderer/            the control panel (HTML/CSS/JS)
+│   ├── xray.js              spectrum analysis and the lossless verdict
+│   ├── motion.js            motion profile and the time-slice still
+│   ├── ramp.js              speed-ramp curve and its export
+│   └── renderer/            the control panel (HTML/CSS/JS; fx.js = the X-ray, ramp and trail cards)
 ├── dist/                    the packaged exe (npm run build)
-├── Exports/                 exported frames and clips land here
+├── Exports/                 exported frames, clips, ramps and time-slices land here
 ├── state_*                  saved session state (auto-generated)
 └── config/
     ├── mpv.conf             GPU, cache, export, IPC settings
