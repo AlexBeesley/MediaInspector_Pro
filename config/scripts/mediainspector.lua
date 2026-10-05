@@ -224,6 +224,10 @@ local render
 -- table, for the same reason cropui does: the main chunk is close to Lua's
 -- 200-local limit. Filled in below the drawing helpers.
 local fx = { spec = {}, trail = {}, ramp = { pts = {} } }
+-- render() reaches it through ui rather than as an upvalue of its own: it is
+-- at LuaJIT's 60-upvalue limit per function, and one more fails the whole
+-- script at load on Windows (the Lua 5.4 limit is 255, so luac misses it).
+ui.fx = fx
 
 -- Scale is driven by window HEIGHT, not width: a portrait clip fills a tall
 -- narrow window, where width-based scaling would shrink the UI to nothing
@@ -2059,6 +2063,7 @@ local function draw_shuttle(ass, x0, x1, cy, S, signed)
 end
 
 render = function()
+    local fx = ui.fx
     local w, h = mp.get_osd_size()
     if not w or w <= 0 or not h or h <= 0 then return end
     ui.osd_w, ui.osd_h = w, h
