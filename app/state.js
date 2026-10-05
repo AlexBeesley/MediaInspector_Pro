@@ -23,6 +23,12 @@ const DEFAULTS = {
   renderApi: 'D3D11 (RTX VSR)',
   shaders: [],
   look: {},
+  spectrogram: false,        // audio files show a live spectrogram
+  trailLength: 50,
+  tsCopies: 8,               // time-slice still
+  tsThreshold: 28,
+  tsFade: true,
+  ramps: {},                 // path -> [[seconds, speed], ...]
 };
 
 class State {

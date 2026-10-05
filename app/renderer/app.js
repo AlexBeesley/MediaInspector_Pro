@@ -361,6 +361,7 @@ let gpuLine = null;
 let autoPanelToggle = null;
 let headTopBtn = null;
 let scrubbing = false;
+let trimBoxes = null;     // In/Out on the Trim card, which fx.js's exports share
 
 function buildCards() {
   cards.innerHTML = '';
@@ -466,7 +467,10 @@ function buildCards() {
     const sp = typeof p['speed'] === 'number' ? p['speed'] : 1;
     const preset = [0.25, 0.5, 1, 2].find((v) => Math.abs(sp - v) < 0.005);
     speedSeg.set(preset === undefined ? '' : preset);
-    slowmoBtn.classList.toggle('on', preset === undefined);
+    // A ramp moves the speed through every value in between; that is the
+    // ramp playing, not a conform.
+    const ramping = p['user-data/mi/ramp_on'] === true;
+    slowmoBtn.classList.toggle('on', preset === undefined && !ramping);
 
     tcFlags.innerHTML = '';
     const flag = (t) => tcFlags.appendChild(el('span', 'flag', t));
@@ -474,6 +478,8 @@ function buildCards() {
     if (p['play-direction'] === 'backward') flag('REVERSE');
     if (p['loop-file'] === 'inf') flag('LOOP');
     if (p['user-data/mi/crop']) flag('CROP');
+    if (ramping) flag('RAMP');
+    if (p['user-data/mi/trail_live']) flag(p['user-data/mi/set_trail'] === 'xray' ? 'X-RAY' : 'TRAIL');
   });
 
   // ---- media -----------------------------------------------------------
@@ -588,6 +594,8 @@ function buildCards() {
     volRead.textContent = muted ? 'muted' : (typeof v === 'number' ? Math.round(v) + '%' : '—');
   });
   badge(c, (p) => (p['mute'] ? 'muted' : ''));
+
+  buildXrayCard();
 
   // ---- playback options ------------------------------------------------
   c = card('Playback options', 'opts', { open: false });
@@ -729,6 +737,10 @@ function buildCards() {
   btn(r, 'Export trimmed clip', () => mi.invoke('trim', { trimIn: trimIn.value, trimOut: trimOut.value }),
     { icon: 'scissors', cls: 'key grow', kinds: ['video', 'audio'] });
   hint(b, 'Times in seconds. Blank Out = end of file. The crop and the colour go with it.');
+  trimBoxes = { in: trimIn, out: trimOut };
+
+  buildRampCard();
+  buildMotionCard();
 
   // ---- window & export -------------------------------------------------
   c = card('Window & export', 'window', { open: false });
@@ -814,6 +826,7 @@ function buildCards() {
     ['r / Shift+R', 'Rotate right / left'],
     ['w', 'Refit window to media'],
     ['Ctrl+H', 'Toggle HDR'],
+    ['t', 'Motion trail: bright / dark / X-ray / off'],
     ['9 / 0, m, a', 'Volume, mute, track'],
     ['Space', 'Play / pause'],
     ['Wheel', 'Shuttle (video) / zoom (photo)'],
