@@ -155,7 +155,7 @@ it, so the image is letterboxed slightly instead of being overlaid.
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | UI scale up / down / reset |
 | `h` / `F1` | Shortcuts overlay |
 | Wheel | Shuttle speed on video/audio, zoom on a photo |
-| `Ctrl` + Wheel | Zoom, whatever is open |
+| `Ctrl` + Wheel, or hold right button + Wheel | Zoom, whatever is open. A right click that does not turn the wheel still does mpv's usual right-click action, on release |
 
 ## Scrubbing
 
@@ -544,3 +544,104 @@ MediaInspector_Pro/
 ```
 
 Requires mpv: `winget install --id shinchiro.mpv -e`
+
+## MediaExplorer
+
+`explorer/` is a companion app for finding media: a thumbnail grid and details
+list over any folder on any disk, with an index that makes whole drives
+searchable as you type. It shows folders and media only - other files are
+never listed, searched or even stored in the index.
+
+Double-clicking a **video** opens it in MediaInspector_Pro (packaged build
+first, then from source). **Photos and audio** open in the OS default app
+(Photos, on Windows); their right-click menu still offers MediaInspector_Pro.
+The preview pane never plays a video by itself - it shows the first frame and
+the controls.
+
+```
+cd explorer
+npm install          # once
+npm start            # run from source (or run MediaExplorer.bat)
+npm test             # indexer checks, no Electron needed; add -- --bench 1000000
+npm run build        # dist\MediaExplorer-win32-x64\MediaExplorer.exe
+```
+
+### How it stays fast
+
+* **The index lives in its own process** (`indexer/`), as typed-array columns
+  plus a name array rather than an object per file. The window talks to it
+  over a MessagePort of its own, so listings and searches never pass through
+  Electron's main process.
+* **Scanning** uses `FindFirstFileExW` with `FIND_FIRST_EX_LARGE_FETCH` on
+  Windows, through koffi: name, size and date in one call per batch, where
+  readdir would need a stat per file. Several threads scan at once, and one is
+  kept for the folder you are opening, so a drive-wide crawl never sits in
+  front of a click.
+* **Browsing is stale-while-revalidate.** A folder seen before is answered
+  from memory immediately and re-read in the background; if anything changed
+  the view updates in place, keeping its scroll position.
+* **Opening a folder indexes it**: it is crawled in the background and becomes
+  an indexed location, unless it is already inside one (a folder that holds
+  earlier locations absorbs them). Right-click empty space in the grid and
+  untick *Index folders when opened* to index only what you add by hand.
+* **Indexed locations** are crawled once,
+  watched for changes on Windows and macOS, and revalidated at startup. A
+  drive that is unplugged keeps its index, so it stays browsable and
+  searchable offline. OS, toolchain and trash folders (`Windows`,
+  `node_modules`, `$RECYCLE.BIN`...) are not crawled, but can still be opened.
+* **Search** joins every lowercased name into one string and runs `indexOf`
+  over it, so it scans the whole index in one pass. Results come back in
+  relevance buckets (whole name, prefix, word start, anywhere), which needs
+  no sort.
+* **Thumbnails** are cached on disk under a key made from path, size and
+  date, and served over `thumb://`. They are made by the Windows/macOS shell
+  thumbnailer first (instant when Explorer already has them, and it knows
+  HEIC/RAW/video codecs), then Chromium's decoders in worker threads of a
+  hidden window, then ffmpeg or mpv. On-screen cells are served last-asked
+  first, the rest of the open folder is built in the background, and a fast
+  flick holds back thumbnails it has not seen until the scroll settles.
+* **The grid and list are virtualised**: only on-screen cells exist, moved
+  with transforms, so a 200,000-file folder costs what a small one does.
+
+Measured on Linux (4 cores), over a synthetic 1M-entry index:
+
+| | |
+|---|---|
+| Search over 1M names | 1–40 ms (`gopro 12`: 21 ms, `dsc_4`: 11 ms) |
+| Load the 1M-entry index (37 MB) | 0.4 s |
+| Open a 20,000-file folder, first visit / from cache | 219 ms / 27 ms |
+| Render a scroll frame (20,000 thumbnails) | 0.56 ms average, 2.8 ms worst |
+| Thumbnails from small JPEGs (worker decode) | ~440 per second |
+
+The index and the thumbnail cache are in `%LOCALAPPDATA%\MediaExplorer` (not
+the roaming profile); `MX_DATA` points them somewhere else.
+
+### Using it
+
+| Key | Action |
+|---|---|
+| Type anywhere / `Ctrl+F` | Search (`?` beside the box lists the syntax) |
+| `Enter` / double-click | Open folder, or open the file in MediaInspector_Pro |
+| `Backspace`, `Alt+Up` | Up a folder |
+| `Alt+Left` / `Alt+Right`, mouse back/forward | History |
+| `Ctrl+L` | Type a path (folder names complete from the index) |
+| `Space` / `P` | Preview pane |
+| `Ctrl+1` / `Ctrl+2` | Thumbnails / details |
+| `Ctrl+Wheel`, right button + Wheel, `Ctrl+=` / `Ctrl+-` | Thumbnail size |
+| `Ctrl+A`, `Ctrl+C` | Select all, copy paths |
+| `F5` | Re-read this folder |
+
+Search syntax: `beach 2023` (every word), `"exact phrase"`, `-exclude`,
+`*.mp4` or `ext:jpg,png`, `video:` `photo:` `audio:`, `is:folder`,
+`size:>100mb` or `size:1gb..4gb`, `date:2023-07`, `after:2024`,
+`modified:7d`, `path:holiday` (inside a folder whose name matches). The
+**Everywhere / This folder** toggle limits a search to the current folder's
+subtree.
+
+Selections can be dragged out to other apps, and a folder dropped on the
+window opens it. Right-click an indexed location to rescan it, build all of
+its thumbnails now, or remove it.
+
+`--shot=<file>.png` (with `--open=<folder>`, `--index=<folder>` and
+`--eval=<script.js>`) renders the window, writes a PNG and exits, for checking
+layout without a screen.

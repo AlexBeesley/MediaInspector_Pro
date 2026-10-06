@@ -789,7 +789,11 @@ if (!app.requestSingleInstanceLock()) {
   // "Open with" from Explorer reuses this window instead of starting a second
   // player that would fight over the same IPC pipe.
   app.on('second-instance', (e, argv) => {
-    const file = argv.slice(1).find((a) => !a.startsWith('-') && fs.existsSync(a));
+    // Files only: run from source, argv also carries the app folder itself.
+    const file = argv.slice(1).find((a) => {
+      if (a.startsWith('-')) return false;
+      try { return fs.statSync(a).isFile(); } catch (err) { return false; }
+    });
     if (file && ipc.connected) ipc.send(['loadfile', file, 'replace']);
     if (win) {
       if (win.isMinimized()) win.restore();
