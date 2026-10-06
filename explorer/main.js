@@ -386,6 +386,7 @@ ipcMain.handle('mx', async (e, name, payload) => {
         index: argOf('index'),
         player: !!findPlayer(),
         playerName: findPlayer() ? 'MediaInspector_Pro' : 'default app',
+        canPlayer: !!findPlayer(),
         prefs: st.prefs || null,
       };
     }
@@ -448,7 +449,8 @@ function popupMenu(sender, items) {
 // A folder (or a file, whose folder is opened) given on the command line.
 function startPathArg(args) {
   for (const a of args) {
-    if (a.startsWith('-')) continue;
+    // Run from source, the app's own folder is on the command line too.
+    if (a.startsWith('-') || path.resolve(a) === __dirname) continue;
     try {
       const st = fs.statSync(a);
       return st.isDirectory() ? path.resolve(a) : path.dirname(path.resolve(a));

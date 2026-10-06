@@ -58,7 +58,7 @@ async function main() {
 
   await check('listDir reads names, kinds and sizes', () => {
     const l = listDir(path.join(tree, 'Holiday 2023'));
-    assert.strictEqual(l.n, 5);
+    assert.strictEqual(l.n, 4, 'notes.txt is not media and is never listed');
     const i = l.names.indexOf('clip.MP4');
     assert.ok(i >= 0);
     assert.strictEqual(l.sizes[i], 5000);
@@ -84,8 +84,7 @@ async function main() {
     assert.ok(!r.error, r.error);
     // media only by default: notes.txt is filtered out
     assert.deepStrictEqual(r.rows.map((x) => x.name), ['beach 1.jpg', 'beach 2.jpg', 'beach 10.jpg', 'clip.MP4']);
-    const all = await ix.list({ path: path.join(tree, 'Holiday 2023'), show: 'all' });
-    assert.strictEqual(all.ids.length, 5);
+    assert.strictEqual(ix.search({ q: 'notes' }).ids.length, 0);
   });
 
   await check('missing folder is an error, not a crash', async () => {
@@ -109,7 +108,8 @@ async function main() {
     const album = ix.search({ q: 'album' });
     assert.strictEqual(album.rows[0].name, 'Album');
     assert.ok(album.rows[0].dir);
-    assert.ok(ix.roots[0].files >= 9, JSON.stringify(ix.roots[0]));
+    assert.ok(ix.roots[0].files >= 7, JSON.stringify(ix.roots[0]));
+    assert.strictEqual(ix.roots[0].files, ix.roots[0].media, 'only media is indexed');
   });
 
   await check('relevance: exact and prefix before substring', async () => {
@@ -180,6 +180,29 @@ async function main() {
     assert.strictEqual(ix.search({ q: 'track 02' }).ids.length, 1);
     // the top is always read, plus the folder that changed
     assert.ok(reads <= 2, 'read ' + reads + ' folders');
+  });
+
+  await check('opening a folder indexes it', async () => {
+    const other = path.join(tmp, 'other');
+    touch(path.join(other, 'deep', 'deeper', 'found.mp4'));
+    await ix.list({ path: other, autoIndex: true });
+    assert.ok(ix.roots.some((r) => r.path === other));
+    await waitFor(() => ix.search({ q: 'found' }).ids.length === 1);
+    // a folder inside it does not become a location of its own
+    await ix.list({ path: path.join(other, 'deep'), autoIndex: true });
+    assert.strictEqual(ix.roots.filter((r) => r.path.startsWith(other)).length, 1);
+  });
+
+  await check('an old index file loses its non-media entries', async () => {
+    const s = new Store();
+    const top = s.idOfPath(tree, true);
+    s.add(top, 'a.jpg', 0, 1, 1);
+    s.add(top, 'b.txt', 0, 1, 1);
+    const f = path.join(tmp, 'old.bin');
+    s.save(f);
+    const { store } = Store.load(f);
+    assert.strictEqual(store.childByName(store.idOfPath(tree, false), 'b.txt'), -1);
+    assert.strictEqual(store.childByName(store.idOfPath(tree, false), 'a.jpg') >= 0, true);
   });
 
   await ix.close();

@@ -9,8 +9,10 @@
 // out of a reused Buffer rather than decoded into an object per file.
 //
 // Everywhere else (and on Windows if koffi will not load) it is readdir with
-// file types, plus a stat only where a size or date is worth having: media
-// files and directories. Other files get size -1 and show as "-".
+// file types, plus a stat for each folder and media file.
+//
+// Only folders and media files are returned at all: the explorer never shows
+// anything else, so it is not worth a byte of the index.
 
 const fs = require('fs');
 const path = require('path');
@@ -131,6 +133,7 @@ function listWin32(dir) {
       // desktop.ini, Thumbs.db and friends: hidden *and* system is the OS
       // saying "not for people".
       if ((attrs & (FA_HIDDEN | FA_SYSTEM)) === (FA_HIDDEN | FA_SYSTEM)) continue;
+      if (!(attrs & FA_DIRECTORY) && kindOf(name) === KIND.OTHER) continue;
       let f = 0;
       if (attrs & FA_DIRECTORY) f |= L_DIR;
       if (attrs & FA_REPARSE) f |= L_LINK;
@@ -164,6 +167,7 @@ function listPortable(dir) {
   const posix = process.platform !== 'win32';
   for (const d of ents) {
     const name = d.name;
+    if (!d.isDirectory() && !d.isSymbolicLink() && kindOf(name) === KIND.OTHER) continue;
     let f = 0;
     if (posix && name.charCodeAt(0) === 46) f |= L_HIDDEN; // dotfile
     let isDir = d.isDirectory();
@@ -181,7 +185,7 @@ function listPortable(dir) {
       } catch (e) {
         continue; // dangling link
       }
-    } else if (isDir || kindOf(name) !== KIND.OTHER) {
+    } else {
       // Directories need their mtime (it is how a revisit skips unchanged
       // folders); media needs size and date for the grid and the thumbnail key.
       try {
@@ -191,9 +195,8 @@ function listPortable(dir) {
       } catch (e) {
         continue; // vanished between readdir and stat
       }
-    } else if (!d.isFile()) {
-      continue; // sockets, fifos, devices
     }
+    if (!isDir && kindOf(name) === KIND.OTHER) continue; // a link to a non-media file
     if (isDir) f |= L_DIR;
     push(l, name, f, size, mtime);
   }

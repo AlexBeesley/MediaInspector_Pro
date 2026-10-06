@@ -549,9 +549,14 @@ Requires mpv: `winget install --id shinchiro.mpv -e`
 
 `explorer/` is a companion app for finding media: a thumbnail grid and details
 list over any folder on any disk, with an index that makes whole drives
-searchable as you type. Double-clicking a video, photo or audio file opens it
-in MediaInspector_Pro (packaged build first, then from source); anything else
-opens with its default app.
+searchable as you type. It shows folders and media only - other files are
+never listed, searched or even stored in the index.
+
+Double-clicking a **video** opens it in MediaInspector_Pro (packaged build
+first, then from source). **Photos and audio** open in the OS default app
+(Photos, on Windows); their right-click menu still offers MediaInspector_Pro.
+The preview pane never plays a video by itself - it shows the first frame and
+the controls.
 
 ```
 cd explorer
@@ -575,7 +580,11 @@ npm run build        # dist\MediaExplorer-win32-x64\MediaExplorer.exe
 * **Browsing is stale-while-revalidate.** A folder seen before is answered
   from memory immediately and re-read in the background; if anything changed
   the view updates in place, keeping its scroll position.
-* **Indexed locations** (sidebar, or *Index this folder*) are crawled once,
+* **Opening a folder indexes it**: it is crawled in the background and becomes
+  an indexed location, unless it is already inside one (a folder that holds
+  earlier locations absorbs them). Right-click empty space in the grid and
+  untick *Index folders when opened* to index only what you add by hand.
+* **Indexed locations** are crawled once,
   watched for changes on Windows and macOS, and revalidated at startup. A
   drive that is unplugged keeps its index, so it stays browsable and
   searchable offline. OS, toolchain and trash folders (`Windows`,

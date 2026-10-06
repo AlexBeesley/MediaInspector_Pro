@@ -447,6 +447,10 @@ class Indexer {
     }
     id = s.alive(id) ? id : -1;
     if (id < 0) return { error: 'missing', path: p };
+    // Opening a folder indexes it, unless it is already inside an indexed
+    // location or the page has turned that off. A folder that holds earlier
+    // locations absorbs them.
+    if (o.autoIndex && !this.rootOf(s.pathOf(id)) && this.volumeOnline(id)) this.addRoot({ path: s.pathOf(id), auto: true });
     const t0 = performance.now();
     const ids = s.list(id, o);
     const parent = s.parent[id];
@@ -529,7 +533,7 @@ class Indexer {
     const lp = s.win ? p.toLowerCase() : p;
     const prefix = lp.endsWith(s.sep) ? lp : lp + s.sep;
     this.roots = this.roots.filter((r) => !(s.win ? r.path.toLowerCase() : r.path).startsWith(prefix));
-    this.roots.push({ path: p, added: Date.now(), lastScan: 0, ms: 0, files: 0, dirs: 0, media: 0, status: 'idle' });
+    this.roots.push({ path: p, added: Date.now(), auto: !!o.auto, lastScan: 0, ms: 0, files: 0, dirs: 0, media: 0, status: 'idle' });
     this.startCrawl(p, false);
     this.startWatch(p);
     return this.rootsInfo();

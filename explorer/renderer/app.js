@@ -16,6 +16,7 @@ const DEFAULT_PREFS = {
   hidden: false,
   preview: true,
   scope: 'all',
+  autoIndex: true,     // opening a folder indexes it
   sideW: 220,
   prevW: 340,
   last: null,
@@ -206,7 +207,7 @@ const view = new VirtualView($('scroller'), $('spacer'), $('listhead'), {
 
 function listOpts() {
   const p = S.prefs;
-  return { show: p.show, sort: p.sort, desc: p.desc, hidden: p.hidden };
+  return { show: p.show, sort: p.sort, desc: p.desc, hidden: p.hidden, autoIndex: p.autoIndex };
 }
 
 let navSeq = 0;
@@ -306,7 +307,9 @@ function activate(id) {
   const r = rows.get(id);
   if (!r) return;
   if (r.dir) { go(r.path); return; }
-  if (r.kind) mx.invoke('open', r.path); else mx.invoke('open-default', r.path);
+  // Videos go to the inspector; photos and audio to whatever the OS opens
+  // them with (Photos, on Windows).
+  if (r.kind === 1) mx.invoke('open', r.path); else mx.invoke('open-default', r.path);
 }
 
 // ---------------------------------------------------------------- search
@@ -403,22 +406,20 @@ function renderEmpty() {
   let html = '';
   if (S.searching && view.n === 0) {
     const indexed = S.roots.length;
-    html = `<div class="big">No matches</div><div>for <b>${esc(S.lastSearch ? S.lastSearch.q : '')}</b>${S.prefs.show !== 'all' ? ' among ' + esc(showLabel()) : ''}.</div>`;
-    if (S.prefs.show !== 'all') html += `<div><button class="btn" data-act="show-all">Search all files</button></div>`;
+    html = `<div class="big">No matches</div><div>for <b>${esc(S.lastSearch ? S.lastSearch.q : '')}</b> among ${esc(showLabel())}.</div>`;
     if (!indexed) html += `<div class="dim">Only folders you have opened are searchable until you index a location.</div><div><button class="btn key" data-act="index-here">Index this folder</button></div>`;
   } else if (!S.searching && S.error) {
     const msg = { missing: 'This folder is not there.', denied: 'Access denied.', 'bad-path': 'That is not a path.' }[S.error] || S.error;
     html = `<div class="big">${esc(msg)}</div><div class="dim">${esc(S.path || '')}</div>`;
   } else if (!S.searching && S.listing && view.n === 0) {
-    html = `<div class="big">${S.prefs.show === 'all' ? 'Empty folder' : 'No ' + esc(showLabel()) + ' here'}</div>`;
-    if (S.prefs.show !== 'all') html += `<div><button class="btn" data-act="show-all">Show all files</button></div>`;
+    html = `<div class="big">No ${esc(showLabel())} here</div>`;
   }
   el.innerHTML = html;
   el.hidden = !html;
 }
 
 function showLabel() {
-  return { media: 'media', video: 'videos', photo: 'photos', audio: 'audio', all: 'files' }[S.prefs.show];
+  return { media: 'media', video: 'videos', photo: 'photos', audio: 'audio' }[S.prefs.show] || 'media';
 }
 
 function esc(s) {
@@ -524,7 +525,7 @@ function renderRoots() {
   if (!S.roots.length) {
     const d = document.createElement('div');
     d.className = 'hintline';
-    d.textContent = 'Index a folder or drive to search all of it instantly.';
+    d.textContent = S.prefs.autoIndex ? 'Folders you open are indexed and searchable.' : 'Index a folder or drive to search all of it instantly.';
     el.appendChild(d);
   }
   for (const r of S.roots) {
@@ -589,6 +590,7 @@ async function contextMenu(id, e) {
       { id: 'index-here', label: 'Index this folder', enabled: !!S.path && !S.roots.some((x) => sameOrUnder(S.path, x.path)) },
       { type: 'separator' },
       { id: 'hidden', label: 'Show hidden files', type: 'checkbox', checked: S.prefs.hidden },
+      { id: 'auto-index', label: 'Index folders when opened', type: 'checkbox', checked: S.prefs.autoIndex },
       { id: 'reveal-here', label: 'Open in system file manager', enabled: !!S.path },
       { id: 'copy-here', label: 'Copy folder path', enabled: !!S.path },
     ];
@@ -601,10 +603,10 @@ async function contextMenu(id, e) {
       { id: 'copy', label: sel.length > 1 ? `Copy ${sel.length} paths` : 'Copy path', accel: 'Ctrl+C' },
     ];
   } else {
-    items = [
-      { id: 'open', label: r.kind ? `Open in ${player}` : 'Open', accel: 'Enter' },
-      { id: 'open-default', label: 'Open with default app' },
-    ];
+    items = r.kind === 1
+      ? [{ id: 'open', label: `Open in ${player}`, accel: 'Enter' }, { id: 'open-default', label: 'Open with default app' }]
+      : [{ id: 'open', label: 'Open', accel: 'Enter' }];
+    if (r.kind !== 1 && S.boot.canPlayer) items.push({ id: 'open-player', label: `Open in ${player}` });
     if (S.searching) items.push({ id: 'goto', label: 'Go to containing folder' });
     items.push(
       { type: 'separator' },
@@ -617,10 +619,17 @@ async function contextMenu(id, e) {
     case 'reload': reload(); break;
     case 'index-here': addRoot(S.path); break;
     case 'hidden': S.prefs.hidden = !S.prefs.hidden; savePrefs(); refilter(); break;
+    case 'auto-index':
+      S.prefs.autoIndex = !S.prefs.autoIndex;
+      savePrefs();
+      toast(S.prefs.autoIndex ? 'Folders are indexed when opened' : 'Folders are indexed only when you ask');
+      if (S.prefs.autoIndex && S.path) go(S.path, { push: false, keep: true, cached: true, scrollTop: $('scroller').scrollTop });
+      break;
     case 'reveal-here': mx.invoke('open-default', S.path); break;
     case 'copy-here': mx.invoke('copy', S.path); break;
     case 'open': activate(id); break;
     case 'open-default': mx.invoke('open-default', r.path); break;
+    case 'open-player': mx.invoke('open', r.path); break;
     case 'index': addRoot(r.path); break;
     case 'reveal': mx.invoke('reveal', r.path); break;
     case 'copy': copySelection(); break;
@@ -687,7 +696,8 @@ function renderPreview(id) {
     // The thumbnail first, at once; the full image replaces it once decoded.
     media = `<img class="pvimg" src="${thumb}">`;
   } else if (r.kind === 1 && PLAYABLE.has(ext) && !r.cloud) {
-    media = `<video class="pvvid" muted loop playsinline controls preload="metadata" ${thumb ? `poster="${thumb}"` : ''} src="${fileURL(r.path)}"></video>`;
+    // Never plays by itself: the controls are there for when you want it.
+    media = `<video class="pvvid" playsinline controls preload="metadata" ${thumb ? `poster="${thumb}"` : ''} src="${fileURL(r.path)}"></video>`;
   } else if (r.kind === 3) {
     media = (thumb ? `<img class="pvimg sq" src="${thumb}">` : `<div class="pvicon">${icon('audio')}</div>`) + (r.cloud ? '' : `<audio controls preload="metadata" src="${fileURL(r.path)}"></audio>`);
   } else {
@@ -706,7 +716,7 @@ function renderPreview(id) {
     <div class="pvname" title="${esc(r.path)}">${esc(r.name)}</div>
     <table class="pvinfo">${info.filter((x) => x[1]).map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</table>
     <div class="pvbtns">
-      ${r.dir ? '<button class="btn key" id="pvOpen">Open folder</button>' : `<button class="btn key" id="pvOpen">${r.kind ? 'Open in ' + esc(S.boot.playerName) : 'Open'}</button>`}
+      ${r.dir ? '<button class="btn key" id="pvOpen">Open folder</button>' : `<button class="btn key" id="pvOpen">${r.kind === 1 ? 'Open in ' + esc(S.boot.playerName) : 'Open'}</button>`}
       <button class="btn" id="pvReveal">Show in folder</button>
     </div>`;
   $('pvOpen').onclick = () => activate(id);
@@ -737,8 +747,6 @@ function renderPreview(id) {
       if (d && isFinite(vid.duration)) { d.textContent = fmtDuration(vid.duration); d.className = ''; }
     });
     vid.addEventListener('error', () => { dims(0, 0); const d = $('pvDur'); if (d) d.closest('tr').remove(); });
-    // Play once the selection has settled on it, not while arrowing past.
-    if (vid.tagName === 'VIDEO') setTimeout(() => { if (previewId === id) vid.play().catch(() => {}); }, 350);
   } else {
     dims(0, 0);
     const d = $('pvDur');
@@ -812,6 +820,7 @@ function loadPrefs(fromMain) {
   let p = null;
   try { p = JSON.parse(localStorage.getItem('mx.prefs') || 'null'); } catch (e) { p = null; }
   S.prefs = { ...DEFAULT_PREFS, ...(fromMain || {}), ...(p || {}) };
+  if (!['media', 'video', 'photo', 'audio'].includes(S.prefs.show)) S.prefs.show = 'media';
 }
 
 let prefsTimer = 0;
@@ -941,7 +950,6 @@ function wire() {
   $('empty').onclick = (e) => {
     const a = e.target.closest('[data-act]');
     if (!a) return;
-    if (a.dataset.act === 'show-all') { S.prefs.show = 'all'; savePrefs(); refilter(); }
     if (a.dataset.act === 'index-here') addRoot(S.path);
   };
 

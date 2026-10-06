@@ -356,9 +356,9 @@ class Store {
       const f = flags[id];
       if (!hidden && (f & F_HIDDEN)) return false;
       if (f & F_DIR) return true;
-      if (show === 'all') return true;
       const k = kind[id];
-      return want < 0 ? k !== KIND.OTHER : k === want;
+      if (k === KIND.OTHER) return false;
+      return want < 0 || k === want;
     };
   }
 
@@ -722,6 +722,13 @@ class Store {
         const f = flags[id];
         store.lowers[id] = name.toLowerCase();
         store.kind[id] = f & F_DIR ? KIND.OTHER : kindOf(name);
+        // An index written before non-media files were left out: drop them
+        // here, and the next save leaves them behind.
+        if (!(f & F_DIR) && store.kind[id] === KIND.OTHER) {
+          store.flags[id] &= ~F_ALIVE;
+          store.live--;
+          continue;
+        }
         if (f & F_DIR) store.kids[id] = [];
         const p = parent[id];
         if (p >= 0) store.kids[p].push(id);
