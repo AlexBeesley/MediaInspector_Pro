@@ -357,9 +357,20 @@ local function detect_fps()
     return source_fps
 end
 
+-- The rate slow-mo conforms to: 120fps footage plays at 0.2x, so every
+-- source frame is shown at 24 a second.
+local CONFORM_FPS = 24
+
 local function target_fps()
-    local fps = source_fps or detect_fps() or 60
-    return math.min(160, fps)
+    return CONFORM_FPS
+end
+
+-- Conforming only ever slows a clip down; a source at or below the target
+-- (or one whose rate is unknown) plays at 1x.
+local function conform_speed(fps)
+    local tgt = target_fps()
+    if not fps or fps <= tgt + 0.5 then return 1.0 end
+    return tgt / fps
 end
 
 local function slowmo_toggle()
@@ -369,7 +380,7 @@ local function slowmo_toggle()
     end
     local fps = source_fps or detect_fps()
     local tgt = target_fps()
-    if not fps or fps <= tgt + 0.5 then
+    if conform_speed(fps) == 1.0 then
         emit(string.format("Source is %s fps - already at/below %g fps target",
             fps and string.format("%.2f", fps) or "unknown", tgt), 2)
         return
@@ -379,7 +390,7 @@ local function slowmo_toggle()
         slowmo_active = false
         emit("Slow-mo OFF - normal speed", 1.5)
     else
-        mp.set_property("speed", tgt / fps)
+        mp.set_property("speed", conform_speed(fps))
         slowmo_active = true
         emit(string.format("Slow-mo ON - %.2f fps to %g fps (%.1fx slower)", fps, tgt, fps / tgt), 2.5)
     end
@@ -2049,8 +2060,7 @@ local function draw_shuttle(ass, x0, x1, cy, S, signed)
     round_rect(ass, x0, cy - trk / 2, x1, cy + trk / 2, trk / 2, COL_TRACK, "&H10&")
     round_rect(ass, mid - 1 * S, cy - trk, mid + 1 * S, cy + trk, 1 * S, COL_DIM, "&H00&")
 
-    local fps_val = source_fps or detect_fps() or 30
-    local conform = fps_val > 0 and (target_fps() / fps_val) or 1.0
+    local conform = conform_speed(source_fps or detect_fps())
     local def_x = mid + half * clamp(conform / SHUTTLE_MAX, -1, 1)
     round_rect(ass, def_x - 1.5 * S, cy - trk, def_x + 1.5 * S, cy + trk, 1 * S, COL_ACCENT, "&H50&")
 
@@ -2190,7 +2200,7 @@ render = function()
         right(66 * S, "Sound", false, audio_menu)
         right(72 * S, "Export", false, export_frame)
         if not crop.editing then right(52 * S, "Crop", crop.on, cropui.start) end
-        right(86 * S, slowmo_active and string.format("%.1fx", (source_fps or 24) / 24) or "Slow-mo",
+        right(86 * S, slowmo_active and string.format("%.1fx", (source_fps or 0) / target_fps()) or "Slow-mo",
             slowmo_active, slowmo_toggle)
     end
 
@@ -2633,9 +2643,7 @@ mp.register_event("file-loaded", function()
         mp.set_property("play-direction", "forward")
         slowmo_active = false
     else
-        local tgt = target_fps()
-        local fps = source_fps or 30
-        local def_speed = fps > 0 and (tgt / fps) or 1.0
+        local def_speed = conform_speed(source_fps)
         slowmo_active = math.abs(def_speed - 1.0) > 0.01
         mp.set_property_number("speed", def_speed)
         mp.set_property("play-direction", "forward")
