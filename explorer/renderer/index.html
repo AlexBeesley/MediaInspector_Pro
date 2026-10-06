@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' thumb: file: data:; media-src file:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>MediaExplorer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="top">
+    <div class="navbtns">
+      <button class="ib" id="back" title="Back (Alt+Left)"></button>
+      <button class="ib" id="fwd" title="Forward (Alt+Right)"></button>
+      <button class="ib" id="up" title="Up (Backspace)"></button>
+      <button class="ib" id="reload" title="Re-read this folder (F5)"></button>
+    </div>
+    <div id="addrwrap">
+      <div id="crumbs" title="Click to type a path (Ctrl+L)"></div>
+      <input id="addr" spellcheck="false" list="addrlist" autocomplete="off">
+      <datalist id="addrlist"></datalist>
+    </div>
+    <div id="searchwrap">
+      <span class="sicon"></span>
+      <input id="search" spellcheck="false" placeholder="Search the index   (Ctrl+F)" autocomplete="off">
+      <button id="scope" class="tog" title="Search everything indexed, or only inside this folder">Everywhere</button>
+      <button id="qhelp" class="ib small" title="Search syntax">?</button>
+    </div>
+  </header>
+
+  <div id="bar">
+    <div class="seg" id="show">
+      <button data-v="media">Media</button>
+      <button data-v="video">Video</button>
+      <button data-v="photo">Photo</button>
+      <button data-v="audio">Audio</button>
+      <button data-v="all">All files</button>
+    </div>
+    <button id="indexHere" class="btn" title="Crawl this folder and everything under it, keep it up to date, and make it searchable"></button>
+    <div class="grow"></div>
+    <select id="sort" title="Sort">
+      <option value="name">Name</option>
+      <option value="date">Date</option>
+      <option value="size">Size</option>
+      <option value="type">Type</option>
+      <option value="relevance">Relevance</option>
+    </select>
+    <button class="ib" id="dir" title="Reverse order"></button>
+    <div class="seg" id="mode">
+      <button data-v="grid" title="Thumbnails"></button>
+      <button data-v="list" title="Details"></button>
+    </div>
+    <input type="range" id="zoom" min="96" max="420" step="4" title="Thumbnail size (Ctrl+Wheel)">
+    <button class="ib" id="previewBtn" title="Preview pane (P)"></button>
+  </div>
+
+  <main id="main">
+    <nav id="side">
+      <section id="placesSec"><h3>Places</h3><div id="places"></div></section>
+      <section id="drivesSec"><h3>Drives</h3><div id="drives"></div></section>
+      <section id="rootsSec">
+        <h3>Indexed <button id="addRoot" class="ib small" title="Index a folder or drive"></button></h3>
+        <div id="roots"></div>
+      </section>
+    </nav>
+    <div id="sidesplit" class="split"></div>
+    <section id="content">
+      <div id="listhead"></div>
+      <div id="scroller" tabindex="0"><div id="spacer"></div></div>
+      <div id="empty"></div>
+    </section>
+    <div id="prevsplit" class="split"></div>
+    <aside id="preview"><div id="pv"></div></aside>
+  </main>
+
+  <footer id="status">
+    <span id="stLeft"></span>
+    <span class="grow"></span>
+    <span id="stThumbs"></span>
+    <span id="stIndex"></span>
+  </footer>
+
+  <div id="help" class="pop" hidden>
+    <h4>Search</h4>
+    <table>
+      <tr><td><code>beach 2023</code></td><td>names containing every word</td></tr>
+      <tr><td><code>"two words"</code></td><td>exact phrase</td></tr>
+      <tr><td><code>-draft</code></td><td>exclude</td></tr>
+      <tr><td><code>*.mp4</code> <code>ext:jpg,png</code></td><td>by extension</td></tr>
+      <tr><td><code>video:</code> <code>photo:</code> <code>audio:</code></td><td>by kind</td></tr>
+      <tr><td><code>is:folder</code> <code>is:file</code></td><td>folders or files only</td></tr>
+      <tr><td><code>size:&gt;100mb</code> <code>size:1gb..4gb</code></td><td>by size</td></tr>
+      <tr><td><code>date:2023-07</code> <code>after:2024</code> <code>modified:7d</code></td><td>by date</td></tr>
+      <tr><td><code>path:holiday</code></td><td>inside a folder whose name matches</td></tr>
+    </table>
+    <p>Searches everything indexed and every folder you have opened. Esc clears.</p>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="view.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

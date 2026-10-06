@@ -1,0 +1,19 @@
+{
+  "name": "media-explorer",
+  "version": "1.0.0",
+  "description": "MediaExplorer - indexed, cached media browser for any disk, companion to MediaInspector_Pro",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/run.js",
+    "build": "electron-packager . MediaExplorer --platform=win32 --arch=x64 --out=../dist --icon=../app.ico --overwrite --prune=true --ignore=^/test --app-version=1.0.0 --win32metadata.FileDescription=\"MediaExplorer\" --win32metadata.ProductName=\"MediaExplorer\""
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^33.2.0"
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  }
+}
