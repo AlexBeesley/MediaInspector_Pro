@@ -155,7 +155,7 @@ it, so the image is letterboxed slightly instead of being overlaid.
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | UI scale up / down / reset |
 | `h` / `F1` | Shortcuts overlay |
 | Wheel | Shuttle speed on video/audio, zoom on a photo |
-| `Ctrl` + Wheel | Zoom, whatever is open |
+| `Ctrl` + Wheel, or hold right button + Wheel | Zoom, whatever is open. A right click that does not turn the wheel still does mpv's usual right-click action, on release |
 
 ## Scrubbing
 
@@ -618,7 +618,7 @@ the roaming profile); `MX_DATA` points them somewhere else.
 | `Ctrl+L` | Type a path (folder names complete from the index) |
 | `Space` / `P` | Preview pane |
 | `Ctrl+1` / `Ctrl+2` | Thumbnails / details |
-| `Ctrl+Wheel`, `Ctrl+=` / `Ctrl+-` | Thumbnail size |
+| `Ctrl+Wheel`, right button + Wheel, `Ctrl+=` / `Ctrl+-` | Thumbnail size |
 | `Ctrl+A`, `Ctrl+C` | Select all, copy paths |
 | `F5` | Re-read this folder |
 

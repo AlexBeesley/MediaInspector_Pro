@@ -442,7 +442,22 @@ class VirtualView {
       const c = e.target.closest('.cell,.row');
       return c && c.parentNode === sc ? c : null;
     };
+    // Right button held + wheel zooms (app.js). The context menu therefore
+    // waits for the release, and is dropped if the wheel turned meanwhile.
+    // Windows sends contextmenu after mouseup, Linux and macOS before it, so
+    // both orders are handled.
+    this.rmb = false;
+    this.rmbUsed = false;
+    this.pendingCtx = null;
+    window.addEventListener('mouseup', (e) => {
+      if (e.button !== 2 || !this.rmb) return;
+      this.rmb = false;
+      const p = this.pendingCtx;
+      this.pendingCtx = null;
+      if (p && !this.rmbUsed) this.h.context(p.id, p.e);
+    }, true);
     sc.addEventListener('mousedown', (e) => {
+      if (e.button === 2) { this.rmb = true; this.rmbUsed = false; }
       if (e.button !== 0 && e.button !== 2) return;
       const c = cellOf(e);
       if (!c) {
@@ -473,7 +488,9 @@ class VirtualView {
     sc.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const c = cellOf(e);
-      this.h.context(c ? this.ids[c.idx] : -1, e);
+      const id = c ? this.ids[c.idx] : -1;
+      if (this.rmb) this.pendingCtx = { id, e };
+      else if (!this.rmbUsed) this.h.context(id, e);
     });
     sc.addEventListener('dragstart', (e) => {
       const c = cellOf(e);

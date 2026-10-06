@@ -948,9 +948,12 @@ function wire() {
   splitter($('sidesplit'), 'sideW', 1, 140, 480);
   splitter($('prevsplit'), 'prevW', -1, 220, 900);
 
+  // Ctrl+wheel, or the wheel with the right button held: thumbnail size.
   $('scroller').addEventListener('wheel', (e) => {
-    if (!e.ctrlKey || S.prefs.mode !== 'grid') return;
+    if (!e.ctrlKey && !view.rmb) return;
     e.preventDefault();
+    if (view.rmb) view.rmbUsed = true;
+    if (S.prefs.mode !== 'grid' || !e.deltaY) return;
     setZoom(S.prefs.thumb * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
   }, { passive: false });
 

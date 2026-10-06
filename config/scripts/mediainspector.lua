@@ -1590,7 +1590,7 @@ local SHORTCUTS = {
     { "Ctrl+= / Ctrl+- / Ctrl+0", "UI scale up / down / reset" },
     { "h  /  F1", "Toggle this panel" },
     { "Wheel", "Video: shuttle speed.  Photo: zoom" },
-    { "Ctrl+Wheel   Drag", "Zoom   /   pan a zoomed image" },
+    { "Ctrl+Wheel  RMB+Wheel  Drag", "Zoom   /   pan a zoomed image" },
     { "c", "Adjust the crop on the picture" },
     { "Enter / Esc  (adjusting)", "Apply the crop / cancel" },
     { "Drag (crop on)", "Move the full frame inside the crop" },
@@ -2454,14 +2454,52 @@ local function adjust_speed(delta)
     apply_signed_speed(signed_speed() + delta)
 end
 
+-- Holding the right button turns the wheel into zoom, the same as Ctrl - a
+-- one-handed zoom for a hand already on the mouse. The button's own action
+-- (whatever mpv binds to it: pause, or its context menu) moves to the
+-- release, and is skipped if the wheel turned while it was held.
+local rmb = { held = false, wheeled = false, cmd = false }
+
+-- What MBTN_RIGHT would have done without this script: the strongest binding
+-- for it that is not ours. Looked up rather than hard-coded because mpv's
+-- default changed between versions.
+local function rmb_default()
+    if rmb.cmd ~= false then return rmb.cmd end
+    rmb.cmd = nil
+    local best = nil
+    for _, b in ipairs(mp.get_property_native("input-bindings") or {}) do
+        if b.key == "MBTN_RIGHT" and b.cmd and not b.cmd:find("mi_rmb", 1, true)
+            and (not best or (b.priority or 0) > (best.priority or 0)) then
+            best = b
+        end
+    end
+    if best and best.cmd ~= "ignore" then rmb.cmd = best.cmd end
+    return rmb.cmd
+end
+
 -- One wheel, two meanings: a photo has no timeline to shuttle, so the wheel
 -- does the thing a photo viewer's wheel does.
 local function wheel_up()
+    if rmb.held then rmb.wheeled = true zoom_by(0.15) return end
     if is_photo() then zoom_by(0.15) else adjust_speed(0.1) end
 end
 local function wheel_down()
+    if rmb.held then rmb.wheeled = true zoom_by(-0.15) return end
     if is_photo() then zoom_by(-0.15) else adjust_speed(-0.1) end
 end
+
+mp.add_key_binding("MBTN_RIGHT", "mi_rmb", function(e)
+    if e.event == "down" then
+        rmb.held = true
+        rmb.wheeled = false
+    elseif e.event == "up" then
+        local wheeled = rmb.wheeled
+        rmb.held = false
+        rmb.wheeled = false
+        local cmd = not wheeled and rmb_default()
+        if cmd then mp.command(cmd) end
+    end
+end, { complex = true })
 
 mp.observe_property("speed", "number", function(_, speed)
     if not speed then return end

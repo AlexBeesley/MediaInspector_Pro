@@ -830,7 +830,7 @@ function buildCards() {
     ['9 / 0, m, a', 'Volume, mute, track'],
     ['Space', 'Play / pause'],
     ['Wheel', 'Shuttle (video) / zoom (photo)'],
-    ['Ctrl+Wheel, drag', 'Zoom / pan'],
+    ['Ctrl+Wheel or RMB+Wheel, drag', 'Zoom / pan'],
   ];
   for (const [k, v] of keys) {
     dl.appendChild(el('dt', null, k));
